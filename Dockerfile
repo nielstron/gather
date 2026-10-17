@@ -3,6 +3,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
+ARG GATHER_BASE_PATH=
+ENV GATHER_BASE_PATH=$GATHER_BASE_PATH
 RUN npm run build && npm prune --omit=dev
 
 FROM node:22-bookworm-slim
@@ -13,6 +15,8 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/scripts ./scripts
 COPY --from=build /app/src/lib ./src/lib
+ARG GATHER_BASE_PATH=
+ENV GATHER_BASE_PATH=$GATHER_BASE_PATH
 USER node
 EXPOSE 3000
 CMD ["node", "build"]

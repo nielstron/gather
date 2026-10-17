@@ -4,7 +4,7 @@ import { config } from '../src/lib/server/config';
 const [command, folder, ...nameParts] = process.argv.slice(2);
 
 function printInvitation(result: ReturnType<typeof createMember>) {
-  const invitation = new URL('/', config.origin);
+  const invitation = new URL(`${config.basePath}/`, config.origin);
   invitation.hash = `invite=${result.token}`;
   console.log(`${result.member.name} → ${result.member.folder}/`);
   console.log(invitation.toString());

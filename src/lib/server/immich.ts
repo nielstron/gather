@@ -1,3 +1,4 @@
+import { readSettings } from './settings';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { Photo } from '../types.js';
@@ -33,7 +34,7 @@ function unavailable(): ImmichError {
 }
 
 function configuration(): Config | null {
-  const { IMMICH_URL, IMMICH_API_KEY, IMMICH_LIBRARY_ID, IMMICH_PHOTO_ROOT } = process.env;
+  const { immichUrl: IMMICH_URL, immichApiKey: IMMICH_API_KEY, immichLibraryId: IMMICH_LIBRARY_ID, immichPhotoRoot: IMMICH_PHOTO_ROOT } = readSettings();
   if (!IMMICH_URL || !IMMICH_API_KEY || !IMMICH_LIBRARY_ID || !IMMICH_PHOTO_ROOT) return null;
   let url: URL;
   try { url = new URL(IMMICH_URL); } catch { throw unavailable(); }
@@ -273,7 +274,7 @@ export async function requestLibraryScan(): Promise<LibraryScanResult> {
   let config: Config | null;
   try { config = configuration(); } catch { return { state: 'unavailable', message: 'The Immich connection settings need attention.' }; }
   if (!config) return { state: 'unconfigured', message: 'The host has not connected Immich previews yet.' };
-  const key = process.env.IMMICH_SCAN_API_KEY || config.key;
+  const key = readSettings().immichScanApiKey || config.key;
   const current = createHash('sha256').update(config.signature).update(key).digest('hex');
   if (current !== scanSignature) {
     if (trailingScan) clearTimeout(trailingScan);

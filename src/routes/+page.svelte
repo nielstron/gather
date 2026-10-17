@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { base } from '$app/paths';
   import { onMount } from 'svelte';
   import { Button, Badge } from '@immich/ui';
   import justifiedLayout from 'justified-layout';
@@ -104,7 +105,7 @@
       do {
         const params = new URLSearchParams({ q: requestedQuery, offset: String(baseOffset + refreshedPhotos.length), limit: String(Math.min(300, targetCount - refreshedPhotos.length)) });
         if (requestedFolder) params.set('folder', requestedFolder);
-        const response = await fetch(`/api/photos?${params}`);
+        const response = await fetch(`${base}/api/photos?${params}`);
         const body = await response.json();
         if (response.status === 401) { location.reload(); return; }
         if (!response.ok) throw new Error(body.error || 'Your photos could not be loaded. Please try again.');
@@ -148,7 +149,7 @@
         const url = new URL(invite);
         invite = new URLSearchParams(url.hash.slice(1)).get('invite') || '';
       }
-      const response = await fetch('/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: invite }) });
+      const response = await fetch(`${base}/api/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: invite }) });
       token = '';
       if (!response.ok) { const body = await response.json(); throw new Error(body.error || 'This invite is not valid. Ask your host for a new link.'); }
       location.reload();
@@ -177,7 +178,7 @@
     signingIn = true;
     authError = '';
     try {
-      const response = await fetch('/api/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: shareToken, name: joinName.trim() }) });
+      const response = await fetch(`${base}/api/join`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: shareToken, name: joinName.trim() }) });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || 'Unable to join. Ask your host for a fresh shared link.');
       history.replaceState(null, '', `${location.pathname}${location.search}`);
@@ -200,7 +201,7 @@
     savingProfile = true;
     profileError = '';
     try {
-      const response = await fetch('/api/profile', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: profileName.trim() }) });
+      const response = await fetch(`${base}/api/profile`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: profileName.trim() }) });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || 'Your name could not be saved. Please try again.');
       const user = body.user as Member;
@@ -214,7 +215,7 @@
 
   async function signOut() {
     try {
-      const response = await fetch('/api/logout', { method: 'POST' });
+      const response = await fetch(`${base}/api/logout`, { method: 'POST' });
       if (!response.ok) throw new Error('Could not sign out. Please try again.');
       location.reload();
     } catch (cause) { error = cause instanceof Error ? cause.message : 'Could not sign out.'; }
@@ -237,7 +238,7 @@
     }
     const viewable = sortedPhotos.filter((item) => item.previewStatus === 'ready' && !imageErrors.has(item.id));
     viewer = new PhotoSwipe({
-      dataSource: viewable.map((item) => ({ src: `/api/media/${item.id}?kind=preview`, msrc: `/api/media/${item.id}?kind=thumbnail`, width: item.width || 1600, height: item.height || 1200, alt: item.name })),
+      dataSource: viewable.map((item) => ({ src: `${base}/api/media/${item.id}?kind=preview`, msrc: `${base}/api/media/${item.id}?kind=thumbnail`, width: item.width || 1600, height: item.height || 1200, alt: item.name })),
       index: viewable.findIndex((item) => item.id === photo.id), bgOpacity: 0.97,
       showHideAnimationType: 'fade', errorMsg: 'Immich has not finished this preview. You can still download the original.',
     });
@@ -246,7 +247,7 @@
       activeViewer.ui?.registerElement({
         name: 'download-original', order: 8, isButton: true, tagName: 'a', html: '↓ Download original',
         onInit: (element) => {
-          const update = () => { const current = viewable[activeViewer.currIndex]; if (current) { (element as HTMLAnchorElement).href = `/api/media/${current.id}?kind=original`; element.setAttribute('download', current.name); element.setAttribute('aria-label', `Download ${current.name}`); } };
+          const update = () => { const current = viewable[activeViewer.currIndex]; if (current) { (element as HTMLAnchorElement).href = `${base}/api/media/${current.id}?kind=original`; element.setAttribute('download', current.name); element.setAttribute('aria-label', `Download ${current.name}`); } };
           activeViewer.on('change', update); update();
         },
       });
@@ -277,7 +278,7 @@
       await new Promise<void>((resolve) => {
         const xhr = new XMLHttpRequest();
         updateUpload(item.id, { status: 'uploading', xhr, error: undefined, progress: 0 });
-        xhr.open('POST', '/api/upload');
+        xhr.open('POST', `${base}/api/upload`);
         xhr.setRequestHeader('X-Filename', encodeURIComponent(item.file.name));
         xhr.setRequestHeader('Content-Type', item.file.type || 'application/octet-stream');
         xhr.upload.onprogress = (event) => { if (event.lengthComputable) updateUpload(item.id, { progress: Math.round(event.loaded / event.total * 100) }); };
@@ -336,7 +337,7 @@
 
 {#if !data.user}
   <main class="welcome">
-    <a href="/" class="brand welcome-brand" aria-label="Gather home"><span class="brand-mark"><Icon name="grid" size={21} /></span>gather<span class="brand-period">.</span></a>
+    <a href={`${base}/`} class="brand welcome-brand" aria-label="Gather home"><span class="brand-mark"><Icon name="grid" size={21} /></span>gather<span class="brand-period">.</span></a>
     <div class="welcome-content">
       <div class="welcome-art" aria-hidden="true">
         <div class="art-orbit orbit-one"></div><div class="art-orbit orbit-two"></div>
@@ -367,7 +368,7 @@
       </form>
       {/if}
     </div>
-    <footer class="welcome-footer"><Icon name="folder" size={15} /> Your originals, on your own server. <span>Made for sharing.</span></footer>
+    <footer class="welcome-footer"><Icon name="folder" size={15} /> Your originals, on your own server. <a href={`${base}/admin`}>Manage collection</a></footer>
   </main>
 {:else}
   <div class="app-shell">
@@ -416,7 +417,7 @@
         </div>
         {#if previewService !== 'ready'}<div class="service-notice"><Icon name="info" size={19} /><div><strong>{previewService === 'unconfigured' ? 'Connect Immich to bring your gallery to life' : 'Immich previews are temporarily unavailable'}</strong><p>{previewService === 'unconfigured' ? 'Your host needs to connect an Immich external library. You can already upload photos and download originals.' : 'Your photos are safely stored. You can keep uploading and downloading originals while Immich reconnects.'}</p></div><button class="text-button" on:click={() => loadPhotos()}>Refresh</button></div>{/if}
         {#if error}<div class="error-notice" role="alert"><Icon name="info" size={18} /><span>{error}</span><button class="text-button" on:click={() => loadPhotos()}>Try again</button></div>{/if}
-        {#if selected.size}<div class="selection-bar"><button class="icon-button" on:click={() => { selected = new Set(); }} aria-label="Clear selection"><Icon name="close" size={18} /></button><strong>{selected.size} selected</strong><form method="POST" action="/api/download"><input type="hidden" name="ids" value={JSON.stringify([...selected])} /><Button type="submit" class="primary-button"><Icon name="download" size={17} />Download originals</Button></form></div>{/if}
+        {#if selected.size}<div class="selection-bar"><button class="icon-button" on:click={() => { selected = new Set(); }} aria-label="Clear selection"><Icon name="close" size={18} /></button><strong>{selected.size} selected</strong><form method="POST" action={`${base}/api/download`}><input type="hidden" name="ids" value={JSON.stringify([...selected])} /><Button type="submit" class="primary-button"><Icon name="download" size={17} />Download originals</Button></form></div>{/if}
         <div class="photo-timeline" class:selecting={selected.size > 0} bind:clientWidth={galleryWidth}>
           {#each timelineGroups as group (group.key)}
           <section class="timeline-group" aria-label={group.label || 'Photos by filename'}>
@@ -426,11 +427,11 @@
             {@const box = group.layout.boxes[index]}
             {#if box}<article class:selected={selected.has(photo.id)} class:pending={photo.previewStatus !== 'ready' || imageErrors.has(photo.id)} class="photo-tile" style:left={`${box.left}px`} style:top={`${box.top}px`} style:width={`${box.width}px`} style:height={`${box.height}px`}>
               <button class="photo-open" on:click={() => openPhoto(photo)} aria-label={`Open ${photo.name}, shared by ${photo.owner}`} title={`${photo.name} · ${photo.owner}`}>
-                {#if photo.previewStatus === 'ready' && !imageErrors.has(photo.id)}<img src={`/api/media/${photo.id}?kind=thumbnail`} alt={photo.name} loading="lazy" on:error={() => { imageErrors = new Set([...imageErrors, photo.id]); }} />{:else}<div class="pending-preview"><Icon name={photo.previewStatus === 'pending' ? 'clock' : 'image'} size={24} stroke={1.5} /><span>{photo.previewStatus === 'pending' ? 'Processing' : 'No preview'}</span></div>{/if}
+                {#if photo.previewStatus === 'ready' && !imageErrors.has(photo.id)}<img src={`${base}/api/media/${photo.id}?kind=thumbnail`} alt={photo.name} loading="lazy" on:error={() => { imageErrors = new Set([...imageErrors, photo.id]); }} />{:else}<div class="pending-preview"><Icon name={photo.previewStatus === 'pending' ? 'clock' : 'image'} size={24} stroke={1.5} /><span>{photo.previewStatus === 'pending' ? 'Processing' : 'No preview'}</span></div>{/if}
                 <span class="photo-gradient"></span><span class="photo-owner">{photo.owner}</span>
               </button>
               <label class="photo-checkbox" class:checked={selected.has(photo.id)}><input type="checkbox" checked={selected.has(photo.id)} on:change={() => toggleSelect(photo.id)} aria-label={`Select ${photo.name}`} /><span><Icon name="check" size={15} /></span></label>
-              <a class="photo-download" href={`/api/media/${photo.id}?kind=original`} download={photo.name} title="Download original" aria-label={`Download ${photo.name}`}><Icon name="download" size={17} /></a>
+              <a class="photo-download" href={`${base}/api/media/${photo.id}?kind=original`} download={photo.name} title="Download original" aria-label={`Download ${photo.name}`}><Icon name="download" size={17} /></a>
             </article>{/if}
           {/each}
             </div>
@@ -458,5 +459,5 @@
   </dialog>
   {#if dragging}<div class="drop-overlay"><div><span class="drop-icon"><Icon name="upload" size={42} /></span><h2>Drop your moments here</h2><p>Uploading to <strong>{data.user.name}’s folder</strong></p><span>Everyone in the collection can view and download them.</span></div></div>{/if}
   {#if uploads.length}<section class="upload-panel" aria-label="Upload progress" aria-live="polite"><header><span class="upload-panel-icon"><Icon name={activeUploads ? 'upload' : 'check'} size={19} /></span><div><strong>{activeUploads ? `Uploading ${uploads.length - completedUploads} ${uploads.length - completedUploads === 1 ? 'photo' : 'photos'}` : `${completedUploads} of ${uploads.length} uploaded`}</strong><span><Icon name="folder" size={12} /> {data.user.name} / {data.user.folder}</span></div><button class="icon-button" on:click={() => { uploadPanelOpen = !uploadPanelOpen; }} aria-label={uploadPanelOpen ? 'Minimize uploads' : 'Expand uploads'}><span>{uploadPanelOpen ? '−' : '+'}</span></button>{#if !activeUploads}<button class="icon-button" on:click={() => { uploads = []; }} aria-label="Close uploads"><Icon name="close" size={17} /></button>{/if}</header>{#if uploadPanelOpen}<div class="upload-list">{#each uploads as item (item.id)}<div class="upload-row"><span class="upload-file-icon"><Icon name="image" size={21} /></span><div class="upload-item-body"><strong>{item.file.name}</strong><span class:error-text={item.status === 'error'}>{item.status === 'done' ? 'Saved · Immich preview processing' : item.status === 'uploading' ? `${item.progress}% · ${bytes(item.file.size)}` : item.status === 'error' ? item.error : item.status === 'cancelled' ? 'Cancelled' : 'Waiting to upload'}</span>{#if item.status === 'uploading'}<div class="upload-progress"><div style:width={`${item.progress}%`}></div></div>{/if}</div>{#if item.status === 'done'}<span class="upload-success"><Icon name="check" size={18} /></span>{:else if item.status === 'error' || item.status === 'cancelled'}<button class="icon-button" on:click={() => retryUpload(item)} disabled={item.file.size > data.maxUploadBytes} aria-label={`Retry ${item.file.name}`}><Icon name="refresh" size={16} /></button>{:else}<button class="icon-button" on:click={() => cancelUpload(item)} aria-label={`Cancel ${item.file.name}`}><Icon name="close" size={16} /></button>{/if}</div>{/each}</div><footer>Shared with everyone in this collection.</footer>{/if}</section>{/if}
-  <dialog class="pending-dialog" bind:this={pendingDialog}><button class="icon-button dialog-close" on:click={() => pendingDialog.close()} aria-label="Close photo details"><Icon name="close" /></button>{#if pendingPhoto}<div class="dialog-image"><Icon name="image" size={52} stroke={1.2} /></div><Badge size="small" color="secondary">Original safely stored</Badge><h2>{pendingPhoto.name}</h2><p>{pendingPhoto.previewStatus === 'pending' ? 'Immich is preparing this photo’s preview. The original is already yours to enjoy.' : 'The Immich preview is currently unavailable. You can still download the original photo.'}</p><div class="dialog-metadata"><span>Shared by {pendingPhoto.owner}</span><span>{bytes(pendingPhoto.bytes)}</span></div><a class="primary-button button-link" href={`/api/media/${pendingPhoto.id}?kind=original`} download={pendingPhoto.name}><Icon name="download" size={18} />Download original</a>{/if}</dialog>
+  <dialog class="pending-dialog" bind:this={pendingDialog}><button class="icon-button dialog-close" on:click={() => pendingDialog.close()} aria-label="Close photo details"><Icon name="close" /></button>{#if pendingPhoto}<div class="dialog-image"><Icon name="image" size={52} stroke={1.2} /></div><Badge size="small" color="secondary">Original safely stored</Badge><h2>{pendingPhoto.name}</h2><p>{pendingPhoto.previewStatus === 'pending' ? 'Immich is preparing this photo’s preview. The original is already yours to enjoy.' : 'The Immich preview is currently unavailable. You can still download the original photo.'}</p><div class="dialog-metadata"><span>Shared by {pendingPhoto.owner}</span><span>{bytes(pendingPhoto.bytes)}</span></div><a class="primary-button button-link" href={`${base}/api/media/${pendingPhoto.id}?kind=original`} download={pendingPhoto.name}><Icon name="download" size={18} />Download original</a>{/if}</dialog>
 {/if}

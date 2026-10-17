@@ -45,7 +45,7 @@ export async function readAuthJson(request: Request): Promise<Record<string, unk
 
 export function setSessionCookie(cookies: Cookies, token: string) {
   cookies.set('gather_session', token, {
-    path: '/', httpOnly: true, sameSite: 'lax', secure: config.secureCookies,
+    path: config.basePath || '/', httpOnly: true, sameSite: 'lax', secure: config.secureCookies,
     maxAge: config.sessionDays * 86400
   });
 }

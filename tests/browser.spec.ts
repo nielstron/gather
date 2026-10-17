@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import sharp from 'sharp';
 
 let directory: string, origin: string, token: string, server: Server, app: ChildProcess;
+const basePath = process.env.GATHER_BASE_PATH || '';
 let scans = 0;
 let appLog = '';
 const indexed = new Map<string, string>();
@@ -91,7 +92,7 @@ test.beforeAll(async () => {
   app.stderr?.on('data', (chunk) => { appLog += chunk; });
   await expect.poll(async () => {
     if (app.exitCode !== null) throw new Error(appLog);
-    try { return (await fetch(`${origin}/api/health`)).status; } catch { return 0; }
+    try { return (await fetch(`${origin}${basePath}/api/health`)).status; } catch { return 0; }
   }, { timeout: 15_000 }).toBe(200);
 });
 
@@ -107,10 +108,10 @@ test.afterAll(async () => {
 test('shared link, editable names, private gallery, Immich scan, uploads and original downloads', async ({ page, browser, request }, testInfo) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  expect((await request.get(`${origin}/api/photos`)).status()).toBe(401);
-  const csrf = await request.post(`${origin}/api/join`, { data: { token, name: 'Alice' }, headers: { origin: 'https://attacker.invalid' } });
+  expect((await request.get(`${origin}${basePath}/api/photos`)).status()).toBe(401);
+  const csrf = await request.post(`${origin}${basePath}/api/join`, { data: { token, name: 'Alice' }, headers: { origin: 'https://attacker.invalid' } });
   expect(csrf.status()).toBe(403);
-  await page.goto(`${origin}/#share=${token}`);
+  await page.goto(`${origin}${basePath}/#share=${token}`);
   await page.getByLabel('Your name', { exact: true }).fill('Alice');
   await page.getByRole('button', { name: 'Join collection', exact: true }).click();
   await expect(page.getByRole('button', { name: 'All photos', exact: false }).first()).toBeVisible();
@@ -130,7 +131,7 @@ test('shared link, editable names, private gallery, Immich scan, uploads and ori
   await expect(selection).not.toBeChecked();
   await expect(page.locator('.selection-bar')).toHaveCount(0);
   expect(page.url()).not.toContain(token);
-  const response = await page.request.get(`${origin}/api/photos`);
+  const response = await page.request.get(`${origin}${basePath}/api/photos`);
   const listing = await response.json();
   expect(listing.photos).toHaveLength(3);
   expect(JSON.stringify(listing)).not.toContain('test-preview-key');
@@ -150,30 +151,30 @@ test('shared link, editable names, private gallery, Immich scan, uploads and ori
     try { return (await readFile(path.join(directory, 'photos', aliceFolder, 'new-memory.png'))).equals(payload); } catch { return false; }
   }).toBe(true);
   await expect.poll(() => scans).toBe(1);
-  await expect.poll(async () => (await (await page.request.get(`${origin}/api/photos`)).json()).total).toBe(4);
-  const updated = await (await page.request.get(`${origin}/api/photos`)).json();
+  await expect.poll(async () => (await (await page.request.get(`${origin}${basePath}/api/photos`)).json()).total).toBe(4);
+  const updated = await (await page.request.get(`${origin}${basePath}/api/photos`)).json();
   const uploaded = updated.photos.find((photo: { name: string }) => photo.name === 'new-memory.png');
   expect(uploaded.folder).toBe(aliceFolder);
-  const download = await page.request.get(`${origin}/api/media/${uploaded.id}?kind=original`);
+  const download = await page.request.get(`${origin}${basePath}/api/media/${uploaded.id}?kind=original`);
   expect((await download.body()).equals(payload)).toBe(true);
-  const zip = await page.request.post(`${origin}/api/download`, { headers: { origin }, data: { ids: updated.photos.map((photo: { id: string }) => photo.id) } });
+  const zip = await page.request.post(`${origin}${basePath}/api/download`, { headers: { origin }, data: { ids: updated.photos.map((photo: { id: string }) => photo.id) } });
   expect(zip.status()).toBe(200);
   expect(zip.headers()['content-type']).toBe('application/zip');
   const zipBody = await zip.body();
   expect(zipBody.subarray(0, 2).toString()).toBe('PK');
   expect(zipBody.includes(Buffer.from(`${aliceFolder}/new-memory.png`))).toBe(true);
   const traversal = Buffer.from('../secret.jpg').toString('base64url');
-  expect((await page.request.get(`${origin}/api/media/${traversal}?kind=original`)).status()).toBe(400);
+  expect((await page.request.get(`${origin}${basePath}/api/media/${traversal}?kind=original`)).status()).toBe(400);
 
   const bob = await browser.newContext();
-  const login = await bob.request.post(`${origin}/api/join`, { headers: { origin }, data: { token, name: 'Bob' } });
+  const login = await bob.request.post(`${origin}${basePath}/api/join`, { headers: { origin }, data: { token, name: 'Bob' } });
   expect(login.status()).toBe(200);
   const bobFolder = (await login.json()).user.folder;
   expect(bobFolder).not.toBe('bob');
-  const bobUpload = await bob.request.post(`${origin}/api/upload?folder=alice`, { headers: { origin, 'x-filename': 'bobs-photo.png', 'content-type': 'application/octet-stream' }, data: payload });
+  const bobUpload = await bob.request.post(`${origin}${basePath}/api/upload?folder=alice`, { headers: { origin, 'x-filename': 'bobs-photo.png', 'content-type': 'application/octet-stream' }, data: payload });
   expect(bobUpload.status()).toBe(201);
   expect((await bobUpload.json()).photo.folder).toBe(bobFolder);
-  expect((await bob.request.get(`${origin}/api/media/${uploaded.id}?kind=original`)).status()).toBe(200);
+  expect((await bob.request.get(`${origin}${basePath}/api/media/${uploaded.id}?kind=original`)).status()).toBe(200);
   await bob.close();
 
   await page.getByRole('button', { name: 'Close uploads', exact: true }).click();
@@ -181,7 +182,7 @@ test('shared link, editable names, private gallery, Immich scan, uploads and ori
   await page.getByRole('dialog').getByRole('textbox').fill('Alicia');
   await page.getByRole('button', { name: 'Save name', exact: true }).click();
   await expect.poll(async () => {
-    const data = await (await page.request.get(`${origin}/api/photos`)).json();
+    const data = await (await page.request.get(`${origin}${basePath}/api/photos`)).json();
     return data.photos.find((photo: { name: string }) => photo.name === 'new-memory.png')?.owner;
   }).toBe('Alicia');
   expect((await readFile(path.join(directory, 'photos', aliceFolder, 'new-memory.png'))).equals(payload)).toBe(true);
@@ -203,5 +204,53 @@ test('shared link, editable names, private gallery, Immich scan, uploads and ori
   await page.waitForTimeout(200);
   await page.screenshot({ path: testInfo.outputPath('gallery-mobile.png'), fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+
+test('administrator configures a collection and invitations through the UI', async ({ page, request }, testInfo) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const adminUrl = `${origin}${basePath}/admin`;
+  expect((await request.get(`${origin}${basePath}/api/admin/config`)).status()).toBe(401);
+  await page.goto(adminUrl);
+  await expect(page.getByRole('heading', { name: 'Make it yours.' })).toBeVisible();
+  const setup = (await readFile(path.join(directory, 'data', 'admin-setup-token'), 'utf8')).trim();
+  await page.goto(`${adminUrl}#setup=${setup}`);
+  await page.reload();
+  // A reload intentionally clears a token removed from the address bar; it can also be pasted.
+  await page.getByLabel('Private setup token').fill(setup);
+  await page.getByLabel('Administrator password', { exact: true }).fill('a-private-admin-password');
+  await page.getByRole('button', { name: 'Create administrator', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Your collection, your way.' })).toBeVisible();
+  const cookies = await page.context().cookies();
+  expect(cookies.find(cookie => cookie.name === 'gather_admin')?.path).toBe(basePath || '/');
+  await page.getByLabel('Collection name', { exact: true }).fill('A trip to remember');
+  await page.getByRole('button', { name: 'Save settings', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('Settings saved.');
+  const saved = await (await page.request.get(`${origin}${basePath}/api/admin/config`)).json();
+  expect(saved.settings.collectionName).toBe('A trip to remember');
+  expect(saved.settings.immichApiKey).toBeUndefined();
+  expect(saved.settings.immichScanApiKey).toBeUndefined();
+  await page.getByRole('button', { name: 'Choose a different folder' }).click();
+  await expect(page.getByRole('button', { name: '▱ host →', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.getByRole('button', { name: 'People & invitations', exact: true }).click();
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: 'Replace shared link', exact: true }).click();
+  const invitation = page.getByRole('textbox', { name: 'Generated invitation link' });
+  await expect(invitation).toHaveValue(new RegExp(`${basePath}/#share=`));
+  await page.getByLabel('Display name', { exact: true }).fill('Niels');
+  await page.getByLabel('Upload folder', { exact: true }).fill('Niels');
+  await page.getByRole('button', { name: 'Create personal invitation', exact: true }).click();
+  await expect(invitation).toHaveValue(new RegExp(`${basePath}/#invite=`));
+  await expect(page.getByText('Niels/', { exact: false })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('admin-invitations-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('admin-invitations-mobile.png'), fullPage: true });
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Welcome back.' })).toBeVisible();
+  expect((await page.request.get(`${origin}${basePath}/api/admin/config`)).status()).toBe(401);
   expect(errors).toEqual([]);
 });

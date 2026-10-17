@@ -12,8 +12,9 @@ import type { Member, Photo } from '../types';
 const extensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif', '.tif', '.tiff', '.heic', '.heif']);
 const formats = new Set(['jpeg', 'png', 'webp', 'avif', 'gif', 'tiff', 'heif']);
 const metadata = new Map<string, { version: string; width: number; height: number }>();
-let scanCache: { time: number; photos: Photo[] } | undefined;
+let scanCache: { root: string; time: number; photos: Photo[] } | undefined;
 let scanning: Promise<Photo[]> | undefined;
+let scanningRoot = '';
 let generation = 0;
 
 export class MediaError extends Error {
@@ -70,7 +71,7 @@ async function photoInfo(relative: string, members: Member[]): Promise<Photo | n
   const stat = await lstat(absolute);
   if (!stat.isFile() || stat.isSymbolicLink()) return null;
   const version = `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
-  let dimensions = metadata.get(relative);
+  let dimensions = metadata.get(absolute);
   if (!dimensions || dimensions.version !== version) {
     try {
       // Metadata inspection only. All visible thumbnails and previews come from Immich.
@@ -84,7 +85,7 @@ async function photoInfo(relative: string, members: Member[]): Promise<Photo | n
       dimensions = { version, width: 4, height: 3 };
     }
     if (metadata.size >= 20_000) metadata.clear();
-    metadata.set(relative, dimensions);
+    metadata.set(absolute, dimensions);
   }
   const folder = relative.includes('/') ? relative.split('/')[0] : '';
   return { id: encodeId(relative), name: path.basename(relative), folder, owner: members.find((member) => member.folder === folder)?.name || folder || 'Shared folder', width: dimensions.width, height: dimensions.height, bytes: stat.size, modifiedAt: stat.mtime.toISOString(), previewStatus: 'pending' };
@@ -93,8 +94,9 @@ async function photoInfo(relative: string, members: Member[]): Promise<Photo | n
 export function invalidatePhotos() { generation++; scanCache = undefined; }
 
 export async function scanPhotos(members: Member[]): Promise<Photo[]> {
-  if (scanCache && Date.now() - scanCache.time < 15_000) return scanCache.photos;
-  if (scanning) return scanning;
+  if (scanCache && scanCache.root === config.photoRoot && Date.now() - scanCache.time < 15_000) return scanCache.photos;
+  if (scanning && scanningRoot === config.photoRoot) return scanning;
+  scanningRoot = config.photoRoot;
   const startedGeneration = generation;
   scanning = (async () => {
     await ensureRoot();
@@ -115,10 +117,11 @@ export async function scanPhotos(members: Member[]): Promise<Photo[]> {
     }
     await walk('', 0);
     photos.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.id.localeCompare(b.id));
-    if (generation === startedGeneration) scanCache = { time: Date.now(), photos };
+    if (generation === startedGeneration) scanCache = { root: config.photoRoot, time: Date.now(), photos };
     return photos;
   })();
-  try { return await scanning; } finally { scanning = undefined; }
+  const work = scanning;
+  try { return await work; } finally { if (scanning === work) scanning = undefined; }
 }
 
 export function validateFilename(name: string) {

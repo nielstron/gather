@@ -166,11 +166,11 @@ test('download selection validates identifiers and streams a complete ZIP with o
 
 test('API hooks guard private endpoints and require a trusted Origin for sign-in', async () => {
   const { handle } = await import('../src/hooks.server');
-  async function request(pathname: string, method = 'GET', origin?: string, host = 'http://localhost:5173') {
+  async function request(pathname: string, method = 'GET', origin?: string, host = 'http://localhost:5173', route?: string) {
     const url = new URL(pathname, host);
     const event = {
       url, request: new Request(url, { method, headers: origin ? { origin } : {} }),
-      cookies: { get: () => undefined }, locals: {}
+      cookies: { get: () => undefined }, locals: {}, route: route ? { id: route } : undefined
     };
     return handle({ event, resolve: async () => new Response('resolved', { headers: { 'content-type': 'text/html' } }) } as never);
   }
@@ -179,6 +179,8 @@ test('API hooks guard private endpoints and require a trusted Origin for sign-in
     assert.equal(response.status, 401, pathname);
     assert.equal(response.headers.get('cache-control'), 'private, no-store');
   }
+  assert.equal((await request('/custom-prefix/api/photos', 'GET', undefined, undefined, '/api/photos')).status, 401);
+  assert.equal((await request('/custom-prefix/api/admin/config', 'GET', undefined, undefined, '/api/admin/config')).status, 401);
   assert.equal((await request('/api/session', 'POST')).status, 403);
   assert.equal((await request('/api/session', 'POST', 'https://attacker.example')).status, 403);
   assert.equal((await request('/api/session', 'POST', 'http://localhost:5173')).status, 200);
@@ -196,4 +198,22 @@ test('API hooks guard private endpoints and require a trusted Origin for sign-in
     if (originalMode === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = originalMode;
   }
+});
+
+
+test('photo caches remain isolated when requests use different collection snapshots', async () => {
+  const { readSettings, writeSettings, withSettings } = await import('../src/lib/server/settings');
+  const original = readSettings();
+  const anotherRoot = path.join(directory, 'another-collection');
+  mkdirSync(anotherRoot, { recursive: true });
+  writeFileSync(path.join(anotherRoot, 'different.png'), png);
+  await withSettings(async () => {
+    await media.scanPhotos([]);
+    writeSettings({ ...original, photoRoot: anotherRoot });
+    const photos = await media.scanPhotos([]);
+    assert.deepEqual(photos.map(photo => photo.name), ['different.png']);
+  });
+  writeSettings(original);
+  const restored = await media.scanPhotos([]);
+  assert.ok(restored.every(photo => photo.name !== 'different.png'));
 });

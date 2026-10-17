@@ -79,7 +79,7 @@ test('sessions expire and malformed tokens fail safely', () => {
 });
 
 test('member folder names cannot escape the photo root or claim another member', () => {
-  for (const folder of ['../escape', 'alice/other', '/tmp', '.', '..', 'Alice', '-alice', 'a'.repeat(49)]) {
+  for (const folder of ['../escape', 'alice/other', '/tmp', '.', '..', '-alice', 'a'.repeat(49)]) {
     assert.throws(() => auth.createMember('Test', folder), /Folder must/);
   }
   assert.throws(() => auth.createMember('Duplicate', 'alice'), /already has a member/);
@@ -193,4 +193,16 @@ test('join and profile APIs ignore client ownership fields and bound JSON bodies
     cookies, getClientAddress: () => 'auth-test'
   } as never);
   assert.equal(oversized.status, 400);
+});
+
+
+test('a personal invitation for a former group guest survives shared-link revocation', () => {
+  const shared = auth.rotateShareLink();
+  const guest = auth.joinCollection(shared, 'Personal guest');
+  const invitation = auth.rotateMember(guest.member.folder);
+  assert.equal(auth.getSession(guest.sessionToken), null);
+  const session = auth.exchangeInvite(invitation.token)!;
+  auth.revokeShareLink();
+  assert.deepEqual(auth.getSession(session.sessionToken), guest.member);
+  assert.equal((auth.accessOverview().members as { folder: string; shared: number }[]).find(member => member.folder === guest.member.folder)?.shared, 0);
 });

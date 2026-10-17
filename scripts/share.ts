@@ -9,7 +9,7 @@ try {
     console.log('Shared link revoked. Shared-link visitors have been signed out. Their photos remain in the collection.');
   } else {
     const token = command === 'rotate' ? rotateShareLink() : createShareLink();
-    const link = new URL('/', config.origin);
+    const link = new URL(`${config.basePath}/`, config.origin);
     link.hash = `share=${token}`;
     console.log(link.toString());
     console.log('Share this one link with your friends. Each visitor enters their name and receives a personal upload folder.');

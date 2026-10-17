@@ -83,8 +83,8 @@ function createSession(member: Member) {
 }
 
 function validateFolder(folder: string) {
-  if (!/^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/.test(folder)) {
-    throw new Error('Folder must be 1–48 lowercase letters, digits, or hyphens, starting and ending with a letter or digit.');
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,46}[A-Za-z0-9])?$/.test(folder)) {
+    throw new Error('Folder must be 1–48 letters, digits, or hyphens, starting and ending with a letter or digit.');
   }
 }
 
@@ -104,7 +104,7 @@ export function createMember(name: string, folder: string): { member: Member; to
   validateFolder(folder);
   name = validateName(name);
   if (db().prepare('SELECT id FROM members WHERE folder = ?').get(folder)) {
-    throw new Error(`Folder "${folder}" already has a member. Use rotate to create a replacement invitation.`);
+    throw new Error(`Folder "${folder}" already has a member. Create a replacement invitation for this member instead.`);
   }
   mkdirSync(config.photoRoot, { recursive: true });
   const destination = path.join(config.photoRoot, folder);
@@ -129,7 +129,7 @@ export function rotateMember(folder: string): { member: Member; token: string } 
   const member = findMember(folder);
   const token = newToken();
   db().transaction(() => {
-    db().prepare('UPDATE members SET invite_hash = ?, active = 1 WHERE id = ?').run(hash(token), member.id);
+    db().prepare('UPDATE members SET invite_hash = ?, active = 1, shared = 0 WHERE id = ?').run(hash(token), member.id);
     db().prepare('DELETE FROM sessions WHERE member_id = ?').run(member.id);
   })();
   return { member, token };
@@ -169,7 +169,7 @@ export function deleteSession(token: string | undefined): void {
 export function createShareLink(): string {
   return db().transaction(() => {
     const existing = db().prepare('SELECT token_hash FROM shared_link WHERE id = 1').get() as { token_hash: string | null } | undefined;
-    if (existing?.token_hash) throw new Error('A shared link already exists. Its token cannot be recovered. Use npm run share -- rotate to replace it and sign out shared-link visitors.');
+    if (existing?.token_hash) throw new Error('A shared link already exists. Its token cannot be recovered. Replace it in People & invitations to create a new link and sign out shared-link visitors.');
     const token = newToken();
     db().prepare('INSERT INTO shared_link (id, token_hash, updated_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET token_hash = excluded.token_hash, updated_at = excluded.updated_at')
       .run(hash(token), Date.now());
@@ -181,6 +181,7 @@ export function rotateShareLink(): string {
   return db().transaction(() => {
     db().prepare('UPDATE shared_link SET token_hash = NULL, updated_at = ? WHERE id = 1').run(Date.now());
     db().prepare('DELETE FROM sessions WHERE member_id IN (SELECT id FROM members WHERE shared = 1)').run();
+    db().prepare('UPDATE members SET active = 0 WHERE shared = 1').run();
     return createShareLink();
   }).immediate();
 }
@@ -189,6 +190,7 @@ export function revokeShareLink(): void {
   db().transaction(() => {
     db().prepare('UPDATE shared_link SET token_hash = NULL, updated_at = ? WHERE id = 1').run(Date.now());
     db().prepare('DELETE FROM sessions WHERE member_id IN (SELECT id FROM members WHERE shared = 1)').run();
+    db().prepare('UPDATE members SET active = 0 WHERE shared = 1').run();
   }).immediate();
 }
 
@@ -230,4 +232,20 @@ export function renameMember(id: string, name: string): Member {
   const result = db().prepare('UPDATE members SET name = ? WHERE id = ? AND active = 1').run(name, id);
   if (!result.changes) throw new AuthError(401, 'Your session is no longer active. Open the shared link to join again.');
   return db().prepare('SELECT id, name, folder FROM members WHERE id = ?').get(id) as Member;
+}
+
+/** Switching collections must never grant existing visitors access to different photos. */
+export function resetCollectionAccess() {
+  db().transaction(() => {
+    db().prepare('DELETE FROM sessions').run();
+    db().prepare('DELETE FROM members').run();
+    db().prepare('UPDATE shared_link SET token_hash = NULL, updated_at = ? WHERE id = 1').run(Date.now());
+  })();
+}
+
+export function accessOverview() {
+  return {
+    sharedLinkActive: !!db().prepare('SELECT id FROM shared_link WHERE id = 1 AND token_hash IS NOT NULL').get(),
+    members: db().prepare('SELECT id, name, folder, active, shared FROM members ORDER BY name COLLATE NOCASE').all()
+  };
 }

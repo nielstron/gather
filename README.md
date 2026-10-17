@@ -11,15 +11,38 @@ Requires Node 22.17 or newer.
 ```bash
 npm ci
 cp .env.example .env
-npm run share
 npm run dev
 ```
 
-Send the printed shared URL to your friends. Each opens the same link, enters their name, and joins. The app creates a personal folder and remembers that browser with an HTTP-only session cookie. The shared token is removed from the visible URL after joining and stored only as a hash on the server.
+Open `/admin` to finish setup, choose a shared folder, and create an invitation link. Send that shared URL to your friends. Each opens the same link, enters their name, and joins. The app creates a personal folder and remembers that browser with an HTTP-only session cookie. The shared token is removed from the visible URL after joining and stored only as a hash on the server.
 
 People can change their displayed name later by clicking their name at the top. Their folder and uploaded files stay in place. Names are labels, not passwords: two people with the same name receive separate identities and folders. A new browser, cleared cookies, or an expired session creates a new identity when joining again. This prototype does not recover an identity by name alone.
 
-The default gallery is empty. Uploads and original downloads work before Immich is configured; preview cards explain that the host needs to connect Immich. There is no public demo login or default password.
+Until you choose a collection, the default gallery is empty. Uploads and original downloads work before Immich is configured; preview cards explain that the host needs to connect Immich. There is no public demo login or default password.
+
+## Manage Gather in the browser
+
+Open `/admin` (or `/gather/admin` when using that prefix). The first administrator claims the installation using a private setup link and chooses a password of at least 12 characters. The setup token is created in `DATA_ROOT/admin-setup-token` when the admin page is first opened. A server operator reads that private file and supplies the link `https://your-origin/your-prefix/admin#setup=TOKEN` to the host. The token is never exposed by a public endpoint, is removed from the browser address bar, and is deleted after setup. Later visits use the administrator password. Admin sessions last 12 hours and are separate from guest sessions.
+
+In **Shared folder**, give the collection a name and use the folder picker to choose a directory. In **People & invitations**, create or replace the group link, revoke access, or create a personal invitation tied to a named subfolder. Links appear once so they can be copied; only their hashes are retained. All invited people can view and download the collection and upload into their own folder. There are currently no per-person viewing restrictions or read-only guest roles.
+
+There is one active collection per Gather instance. Changing its folder explicitly requires confirmation, revokes all previous invitations and guest sessions, and clears their membership records. It preserves every original and existing directory. Choose the folder before creating invitations.
+
+The hosting operator configures the boundary of the folder picker once:
+
+```dotenv
+# Plain Node: root containing all directories the administrator may share.
+PHOTO_ALLOWED_ROOT=/srv/photos
+PHOTO_ROOT=/srv/photos/first-trip
+# Optional: the same root as seen inside Immich.
+IMMICH_ALLOWED_ROOT=/external/photos
+```
+
+For Compose, set `GATHER_FOLDER_ROOT=/srv/photos` to mount that root at `/photos` inside Gather. The folder picker is constrained to that root; it cannot traverse symlinks or expose the data directory. For automatic previews, the operator sets Immich's external library ID, keys, and root mapping once. Selecting a folder then updates its Immich path automatically. If no mapping is provided, the optional **Server integration** section allows manual connection setup. Routine sharing needs no CLI commands and no knowledge of container paths.
+
+Browser settings are stored in `DATA_ROOT/settings.json` with mode `0600` and take precedence over their environment defaults. API keys remain on the server; blank password fields preserve existing keys. Back up this file and both SQLite databases along with originals. Keep `DATA_ROOT` outside the entire shareable root. The server's filesystem account needs read access to the available folders and write access to a selected collection for uploads. Gather does not change existing folder ownership or permissions.
+
+Admin authentication is stored in `DATA_ROOT/admin.sqlite`, with salted scrypt password hashes and hashed session tokens. If the administrator password is lost, stop Gather, move that database and its `-wal`/`-shm` files aside, restart, and reclaim it with a new private setup token. This recovery requires access to the server; guests cannot reset the administrator.
 
 ## Connect Immich
 
@@ -66,6 +89,35 @@ No global job or thumbnail regeneration API is called. Newly imported external a
 
 Current v3 metadata filters and the legacy flat search request are supported; Gather falls back to the legacy format only after a schema rejection. API contracts are covered by mock-server tests, including a legacy response. Your deployed Immich instance still needs a connection check with its version, credentials, library ownership, and paths.
 
+## Host under a URL prefix
+
+Set `ORIGIN` to the browser origin (scheme, hostname, and optional port, without a path). Set `GATHER_BASE_PATH` to the URL prefix, or leave it empty to serve at `/`:
+
+```dotenv
+ORIGIN=https://photos.example.com
+GATHER_BASE_PATH=/gather
+COOKIE_SECURE=true
+```
+
+Then run `docker compose up -d --build`. The prefix is compiled into the frontend and server routes, so **rebuild whenever it changes**. Compose passes the value to both the build and runtime. For plain Node, export `GATHER_BASE_PATH` when running `npm run build`, and use the same value in the production `.env`. Values such as `/gather` and `/photos/trip` are supported; trailing slashes are normalized. Full URLs and paths with query strings or traversal segments are rejected.
+
+The reverse proxy must preserve the prefix. For example, with Apache:
+
+```apache
+RedirectMatch 308 ^/gather$ /gather/
+ProxyPass /gather/ http://127.0.0.1:3000/gather/
+ProxyPassReverse /gather/ http://127.0.0.1:3000/gather/
+```
+
+Use `/gather/api/health` for health checks. Share links, personal invitations, frontend assets, API calls, downloads, and session cookies use the configured prefix. Changing it invalidates previously distributed link URLs; retain their fragment tokens and update the path. Existing cookies at the old path are not migrated.
+
+To verify both deployment layouts:
+
+```bash
+npm run test:e2e
+GATHER_BASE_PATH=/gather npm run test:e2e
+```
+
 ## Files and permissions
 
 ```text
@@ -79,7 +131,7 @@ Current v3 metadata filters and the legacy flat search request are supported; Ga
 ```
 
 - Everyone signed in can view and download all supported images under `PHOTO_ROOT`, including existing subfolders. Only their assigned top-level folder accepts their uploads.
-- Display names and stable folder names are separate. Shared-link joins allocate a fresh folder automatically. For an existing folder, an optional administrator command can provision an individual invitation with `npm run user -- add alice "Alice"`.
+- Display names and stable folder names are separate. The admin page manages personal invitations and revocation. Shared-link joins allocate a fresh folder automatically. For an existing folder, an optional administrator command can provision an individual invitation with `npm run user -- add alice "Alice"`.
 - File bytes are preserved. Name collisions produce a new suffixed filename; existing originals are never overwritten.
 - Hidden files and directories, symlinks, and non-photo files are excluded. Directory traversal and unsafe upload names are rejected. The photo root must be a real directory.
 - Only Gather and trusted server administrators should have filesystem write access. Other applications should receive read-only mounts. Filesystem mutation by an untrusted local process is outside the prototype's security model.
@@ -134,7 +186,8 @@ Create both host directories, make them writable by the container's `node` user 
 
 ```bash
 docker compose up -d --build
-docker compose exec gather npm run share
+
+# Then open /admin to choose your folder and create invitations.
 ```
 
 Compose binds Gather to `127.0.0.1:3000`. Put an HTTPS reverse proxy on the host in front of it. For example, with Caddy:
@@ -159,7 +212,7 @@ npm run test:e2e
 
 Browser tests use an isolated temporary photo tree and a mock Immich HTTP server. They launch local Google Chrome at `/usr/bin/google-chrome`; set `CHROME_PATH` to another Chromium executable as needed. Tests do not use your configured photos or Immich keys.
 
-This prototype supports one collection, one Node process, up to 20,000 discovered images, nesting up to 12 directories, 50 MB per uploaded file by default, and ZIP selections of up to 200 photos. The file list is refreshed on request with a 15-second metadata cache; preview lookup misses are retried after 10 seconds. Gallery dates currently use filesystem modification time. Uploads retry a complete file; there is no resumable upload protocol, deletion, editing, face recognition, or cross-device identity recovery. Joining and renaming happen in the browser; shared-link management is a server-side CLI command.
+This prototype supports one collection, one Node process, up to 20,000 discovered images, nesting up to 12 directories, 50 MB per uploaded file by default, and ZIP selections of up to 200 photos. The file list is refreshed on request with a 15-second metadata cache; preview lookup misses are retried after 10 seconds. Gallery dates currently use filesystem modification time. Uploads retry a complete file; there is no resumable upload protocol, deletion, editing, face recognition, or cross-device identity recovery. Joining and renaming happen in the browser; shared links and collection settings are managed through the administrator page; legacy CLI commands remain available.
 
 ## References
 

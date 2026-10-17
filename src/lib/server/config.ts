@@ -1,3 +1,5 @@
+import { readSettings } from './settings';
+import { normalizeBasePath } from '../base-path';
 import path from 'node:path';
 
 function positiveInteger(value: string | undefined, fallback: number) {
@@ -7,9 +9,10 @@ function positiveInteger(value: string | undefined, fallback: number) {
 }
 
 export const config = {
-  photoRoot: path.resolve(process.env.PHOTO_ROOT || './var/photos'),
+  basePath: normalizeBasePath(process.env.GATHER_BASE_PATH),
+  get photoRoot() { return readSettings().photoRoot; },
   dataRoot: path.resolve(process.env.DATA_ROOT || './var/data'),
-  collectionName: process.env.COLLECTION_NAME || 'Our shared moments',
+  get collectionName() { return readSettings().collectionName; },
   maxUploadBytes: positiveInteger(process.env.MAX_UPLOAD_MB, 50) * 1024 * 1024,
   sessionDays: positiveInteger(process.env.SESSION_DAYS, 30),
   secureCookies: process.env.COOKIE_SECURE !== 'false',

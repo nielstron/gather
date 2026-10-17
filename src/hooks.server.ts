@@ -1,13 +1,16 @@
+import { withSettings } from '$lib/server/settings';
+import { getAdminSession } from '$lib/server/admin';
 import { json, type Handle } from '@sveltejs/kit';
 import { getSession } from '$lib/server/auth';
 import { config } from '$lib/server/config';
 
-const publicApis = new Set(['/api/session', '/api/join', '/api/health']);
+const publicApis = new Set(['/api/session', '/api/join', '/api/health', '/api/admin/session']);
 const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
 
-export const handle: Handle = async ({ event, resolve }) => {
+export const handle: Handle = ({ event, resolve }) => withSettings(async () => {
   event.locals.user = getSession(event.cookies.get('gather_session'));
-  const isApi = event.url.pathname === '/api' || event.url.pathname.startsWith('/api/');
+  const pathname = event.route?.id ?? event.url.pathname.slice(config.basePath.length);
+  const isApi = pathname === '/api' || pathname.startsWith('/api/');
   let response: Response;
 
   const requestOrigin = event.request.headers.get('origin');
@@ -17,7 +20,9 @@ export const handle: Handle = async ({ event, resolve }) => {
 
   if (!safeMethods.has(event.request.method) && !validOrigin) {
     response = json({ error: 'This request must come from the configured Gather site.' }, { status: 403 });
-  } else if (isApi && !publicApis.has(event.url.pathname) && !event.locals.user) {
+  } else if (pathname.startsWith('/api/admin/') && !publicApis.has(pathname) && !getAdminSession(event.cookies.get('gather_admin'))) {
+    response = json({ error: 'Sign in as the administrator.' }, { status: 401 });
+  } else if (isApi && !pathname.startsWith('/api/admin/') && !publicApis.has(pathname) && !event.locals.user) {
     response = json({ error: 'Open your invitation link to sign in.' }, { status: 401 });
   } else {
     response = await resolve(event);
@@ -31,4 +36,4 @@ export const handle: Handle = async ({ event, resolve }) => {
     response.headers.set('cache-control', 'private, no-store');
   }
   return response;
-};
+});
