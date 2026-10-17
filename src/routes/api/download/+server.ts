@@ -1,4 +1,5 @@
 import archiver from 'archiver';
+import { mapConcurrent } from '$lib/async';
 import { PassThrough, Readable } from 'node:stream';
 import { openPhoto, contentDisposition, MediaError } from '$lib/server/media';
 import { apiError, boundedText } from '$lib/server/http';
@@ -14,7 +15,11 @@ export const POST: RequestHandler = async ({ request }) => {
         ? JSON.parse(new URLSearchParams(text).get('ids') || 'null') : JSON.parse(text).ids;
     } catch { throw new MediaError(400, 'Invalid download selection'); }
     if (!Array.isArray(ids) || !ids.length || ids.length > 200 || !ids.every((id) => typeof id === 'string')) throw new MediaError(400, 'Select between 1 and 200 photos');
-    for (const id of new Set(ids as string[])) files.push(await openPhoto(id));
+    const ordered = await mapConcurrent([...new Set(ids as string[])], 8, async id => {
+      const file = await openPhoto(id);
+      files.push(file);
+      return file;
+    });
     const archive = archiver('zip', { store: true });
     const output = new PassThrough();
     const sources: Readable[] = [];
@@ -23,7 +28,7 @@ export const POST: RequestHandler = async ({ request }) => {
     archive.on('warning', (error) => output.destroy(error));
     output.on('close', () => { archive.abort(); for (const source of sources) source.destroy(); closeFiles(); });
     archive.pipe(output);
-    for (const file of files) {
+    for (const file of ordered) {
       const source = file.handle.createReadStream();
       source.on('error', (error) => output.destroy(error));
       sources.push(source);

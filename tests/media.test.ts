@@ -238,3 +238,38 @@ test('gallery discovery does not inspect original image bytes before returning f
     media.invalidatePhotos();
   }
 });
+
+
+test('preview snapshots reject hidden and symlink paths and track file revisions', async () => {
+  media.invalidatePhotos();
+  const before = await media.scanPhotos([alice]);
+  const photo = before.find(photo => photo.name === 'holiday.png')!;
+  assert.ok(photo.revision);
+  assert.equal(await media.previewPath(photo.id), 'alice/holiday.png');
+  await assert.rejects(media.previewPath(media.encodeId('shortcut/secret.png')), hasStatus(404));
+  await assert.rejects(media.previewPath(media.encodeId('alice/shortcut.png')), hasStatus(404));
+  await assert.rejects(media.previewPath(media.encodeId('.hidden.png')), hasStatus(400));
+  const renamed: Member = { ...alice, name: 'New name' };
+  await media.scanPhotos([]);
+  const again = await media.scanPhotos([renamed]);
+  assert.equal(again.find(entry => entry.id === photo.id)?.owner, 'New name');
+});
+
+test('authenticated previews retain private caching while originals and rejected requests stay uncached', async () => {
+  const auth = await import('../src/lib/server/auth');
+  const { handle } = await import('../src/hooks.server');
+  const invitation = auth.createMember('Cache visitor', 'cache-visitor');
+  const session = auth.exchangeInvite(invitation.token)!;
+  async function request(contentType: string, authenticated: boolean) {
+    const url = new URL('http://localhost:5173/api/media/photo');
+    return handle({ event: {
+      url, route: { id: '/api/media/[id]' }, request: new Request(url),
+      cookies: { get: (name: string) => name === 'gather_session' && authenticated ? session.sessionToken : undefined }, locals: {}
+    }, resolve: async () => new Response('bytes', { headers: { 'content-type': contentType, 'cache-control': 'private, max-age=60' } }) } as never);
+  }
+  assert.equal((await request('image/webp', true)).headers.get('cache-control'), 'private, max-age=60');
+  assert.equal((await request('application/octet-stream', true)).headers.get('cache-control'), 'private, no-store');
+  const denied = await request('image/webp', false);
+  assert.equal(denied.status, 401);
+  assert.equal(denied.headers.get('cache-control'), 'private, no-store');
+});

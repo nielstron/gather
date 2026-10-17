@@ -268,3 +268,21 @@ test('explicit library mode skips the folder-scan request', async () => {
     assert.equal(requests.length, 1);
   } finally { delete process.env.IMMICH_SCAN_MODE; }
 });
+
+
+test('independent metadata batches overlap, share pending lookups, and respect the API concurrency limit', async () => {
+  configure();
+  let active = 0, peak = 0;
+  handler = (_req, res, body) => {
+    active++; peak = Math.max(peak, active);
+    res.once('finish', () => { active--; });
+    setTimeout(() => json(res, body.filter.originalPath.in.map((original: string) => asset(original))), 25);
+  };
+  const photos = Array.from({ length: 950 }, (_, index) => photo(`alice/batch-${index}.jpg`));
+  const [first, second] = await Promise.all([enrichPhotos(photos), enrichPhotos(photos)]);
+  assert.equal(first.photos.filter(photo => photo.previewStatus === 'ready').length, 950);
+  assert.equal(second.photos.filter(photo => photo.previewStatus === 'ready').length, 950);
+  assert.equal(requests.length, 10, 'one lookup per batch despite concurrent gallery requests');
+  assert.ok(peak > 1, 'independent batches must overlap');
+  assert.ok(peak <= 8, 'the shared API limit includes all batches and callers');
+});

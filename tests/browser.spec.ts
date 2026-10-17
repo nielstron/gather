@@ -279,3 +279,29 @@ test('a stalled gallery request stops loading and offers a working retry', async
   await expect(page.locator('.photo-tile').first()).toBeVisible();
   await expect(page.getByRole('alert')).toHaveCount(0);
 });
+
+
+test('two uploads start together instead of waiting for each other', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invitation = auth.createMember('Parallel uploads', 'parallel-uploads');
+  await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
+  await expect(page.locator('.photo-tile').first()).toBeVisible();
+  const payload = await sharp({ create: { width: 20, height: 20, channels: 3, background: '#476a81' } }).png().toBuffer();
+  let started = 0;
+  let release!: () => void;
+  const bothStarted = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/upload', async route => {
+    if (++started === 2) release();
+    await bothStarted;
+    await route.continue();
+  });
+  await page.locator('input[type="file"]').setInputFiles([
+    { name: 'parallel-one.png', mimeType: 'image/png', buffer: payload },
+    { name: 'parallel-two.png', mimeType: 'image/png', buffer: payload }
+  ]);
+  await expect.poll(() => started).toBe(2);
+  await expect.poll(async () => {
+    const result = await (await page.request.get(`${origin}${basePath}/api/photos`)).json();
+    return result.photos.filter((photo: { name: string }) => photo.name.startsWith('parallel-')).length;
+  }).toBe(2);
+});

@@ -1,4 +1,5 @@
 import { readSettings } from './settings';
+import { createLimiter } from '../async';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { Photo } from '../types.js';
@@ -12,6 +13,7 @@ const pending = new Map<string, Promise<Asset | null>>();
 const CACHE_LIMIT = 2_000;
 const BATCH_SIZE = 100;
 const NEGATIVE_TTL = 10_000;
+const metadataRequests = createLimiter(8);
 let signature = '';
 let legacy = false;
 export type LibraryScanResult = { state: 'queued' | 'scheduled' | 'unconfigured' | 'unavailable'; message?: string };
@@ -86,7 +88,11 @@ async function request(config: Config, endpoint: string, init: RequestInit = {},
   }
 }
 
-async function search(config: Config, body: object): Promise<SearchPage> {
+function search(config: Config, body: object): Promise<SearchPage> {
+  return metadataRequests(() => searchPage(config, body));
+}
+
+async function searchPage(config: Config, body: object): Promise<SearchPage> {
   const response = await request(config, '/search/metadata', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   });
@@ -148,9 +154,9 @@ async function queryBatch(config: Config, paths: string[]): Promise<Map<string, 
     }
   }
   // Legacy originalPath is a text search, so always compare returned full paths.
-  // Four workers bound requests even when an older server needs one query per file.
+  // Concurrent workers bound requests even when an older server needs one query per file.
   let next = 0;
-  await Promise.all(Array.from({ length: Math.min(4, paths.length) }, async () => {
+  await Promise.all(Array.from({ length: Math.min(8, paths.length) }, async () => {
     while (next < paths.length) {
       const original = paths[next++];
       let page = 1;
@@ -194,8 +200,7 @@ async function resolveAssets(config: Config, paths: string[]): Promise<Map<strin
       pending.set(original, promise);
       waiting.push(promise.then(() => {}));
     }
-    // A gallery page cannot create an unbounded number of simultaneous API calls.
-    await Promise.all(waiting);
+    // Start independent batches together; the shared metadata limiter bounds API traffic.
   }
   await Promise.all(waiting);
   return result;

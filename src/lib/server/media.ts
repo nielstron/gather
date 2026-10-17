@@ -2,16 +2,17 @@ import { constants, createWriteStream } from 'node:fs';
 import { mkdir, readdir, lstat, open, link, unlink } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import sharp from 'sharp';
 import { config } from './config';
+import { runConcurrentQueue } from '../async';
 import type { Member, Photo } from '../types';
 
 const extensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif', '.tif', '.tiff', '.heic', '.heif']);
 const formats = new Set(['jpeg', 'png', 'webp', 'avif', 'gif', 'tiff', 'heif']);
-let scanCache: { root: string; time: number; photos: Photo[] } | undefined;
+let scanCache: { root: string; time: number; photos: Photo[]; ids: Set<string> } | undefined;
 let scanning: Promise<Photo[]> | undefined;
 let scanningRoot = '';
 let generation = 0;
@@ -70,41 +71,52 @@ async function photoInfo(relative: string, members: Member[], dimensions = { wid
   if (!stat.isFile() || stat.isSymbolicLink()) return null;
   // Listings never read original bytes: mounted/network libraries can be slow.
   // Immich supplies actual dimensions when enriching the visible gallery page.
+  const revision = createHash('sha256').update(JSON.stringify([config.photoRoot, relative, stat.size, stat.mtimeMs, stat.ctimeMs])).digest('base64url').slice(0, 20);
   const folder = relative.includes('/') ? relative.split('/')[0] : '';
-  return { id: encodeId(relative), name: path.basename(relative), folder, owner: members.find((member) => member.folder === folder)?.name || folder || 'Shared folder', width: dimensions.width, height: dimensions.height, bytes: stat.size, modifiedAt: stat.mtime.toISOString(), previewStatus: 'pending' };
+  return { id: encodeId(relative), revision, name: path.basename(relative), folder, owner: members.find((member) => member.folder === folder)?.name || folder || 'Shared folder', width: dimensions.width, height: dimensions.height, bytes: stat.size, modifiedAt: stat.mtime.toISOString(), previewStatus: 'pending' };
 }
 
 export function invalidatePhotos() { generation++; scanCache = undefined; }
 
 export async function scanPhotos(members: Member[]): Promise<Photo[]> {
-  if (scanCache && scanCache.root === config.photoRoot && Date.now() - scanCache.time < 15_000) return scanCache.photos;
-  if (scanning && scanningRoot === config.photoRoot) return scanning;
+  const attribute = (photos: Photo[]) => {
+    const names = new Map(members.map(member => [member.folder, member.name]));
+    return photos.map(photo => ({ ...photo, owner: names.get(photo.folder) || photo.folder || 'Shared folder' }));
+  };
+  if (scanCache && scanCache.root === config.photoRoot && Date.now() - scanCache.time < 15_000) return attribute(scanCache.photos);
+  if (scanning && scanningRoot === config.photoRoot) return attribute(await scanning);
   scanningRoot = config.photoRoot;
   const startedGeneration = generation;
   scanning = (async () => {
     await ensureRoot();
     const photos: Photo[] = [];
-    async function walk(directory: string, depth: number) {
-      if (depth > 12) return;
-      const entries = await readdir(path.join(config.photoRoot, directory), { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
-        const relative = directory ? `${directory}/${entry.name}` : entry.name;
-        if (entry.isDirectory()) await walk(relative, depth + 1);
-        else if (entry.isFile() && extensions.has(path.extname(entry.name).toLowerCase())) {
-          if (photos.length >= 20_000) throw new MediaError(413, 'This prototype supports up to 20,000 photos per shared folder');
-          try { const photo = await photoInfo(relative, members); if (photo) photos.push(photo); }
-          catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    type Work = { relative: string; depth: number; directory: boolean };
+    await runConcurrentQueue<Work>([{ relative: '', depth: 0, directory: true }], 16, async (work, enqueue) => {
+      if (work.directory) {
+        if (work.depth > 12) return;
+        const entries = await readdir(path.join(config.photoRoot, work.relative), { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
+          const relative = work.relative ? `${work.relative}/${entry.name}` : entry.name;
+          if (entry.isDirectory()) enqueue({ relative, depth: work.depth + 1, directory: true });
+          else if (entry.isFile() && extensions.has(path.extname(entry.name).toLowerCase())) enqueue({ relative, depth: work.depth, directory: false });
         }
+      } else {
+        try {
+          const photo = await photoInfo(work.relative, members);
+          if (photo) {
+            if (photos.length >= 20_000) throw new MediaError(413, 'This prototype supports up to 20,000 photos per shared folder');
+            photos.push(photo);
+          }
+        } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       }
-    }
-    await walk('', 0);
+    });
     photos.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.id.localeCompare(b.id));
-    if (generation === startedGeneration) scanCache = { root: config.photoRoot, time: Date.now(), photos };
+    if (generation === startedGeneration) scanCache = { root: config.photoRoot, time: Date.now(), photos, ids: new Set(photos.map(photo => photo.id)) };
     return photos;
   })();
   const work = scanning;
-  try { return await work; } finally { if (scanning === work) scanning = undefined; }
+  try { return attribute(await work); } finally { if (scanning === work) scanning = undefined; }
 }
 
 export function validateFilename(name: string) {
@@ -171,4 +183,14 @@ export function contentDisposition(filename: string) {
   const ascii = filename.replace(/[^a-zA-Z0-9_. -]/g, '_');
   const encoded = encodeURIComponent(filename).replace(/['()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
+
+/** Previews only need an authorized path from the recent directory snapshot. */
+export async function previewPath(id: string): Promise<string> {
+  const relative = decodeId(id);
+  const ids = scanCache && scanCache.root === config.photoRoot && Date.now() - scanCache.time < 15_000
+    ? scanCache.ids : new Set((await scanPhotos([])).map(photo => photo.id));
+  if (!ids.has(id)) throw new MediaError(404, 'Photo not found');
+  return relative;
 }

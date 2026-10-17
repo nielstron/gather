@@ -1,5 +1,6 @@
 <script lang="ts">
   import { base } from '$app/paths';
+  import { mapConcurrent } from '$lib/async';
   import { onMount } from 'svelte';
   import { Button, Badge } from '@immich/ui';
   import justifiedLayout from 'justified-layout';
@@ -52,6 +53,7 @@
   $: allSelected = photos.length > 0 && photos.slice(0, 200).every((photo) => selected.has(photo.id));
   $: selectionAction = allSelected ? 'Deselect all' : photos.length > 200 ? 'Select first 200' : 'Select all';
   $: sortedPhotos = [...photos].sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name) : Date.parse(b.modifiedAt) - Date.parse(a.modifiedAt));
+  $: photoIndexes = new Map(sortedPhotos.map((photo, index) => [photo.id, index]));
   $: timelineGroups = groupTimeline(sortedPhotos, galleryWidth, sort);
   $: completedUploads = uploads.filter((upload) => upload.status === 'done').length;
   $: activeUploads = uploads.filter((upload) => upload.status === 'waiting' || upload.status === 'uploading').length;
@@ -85,6 +87,10 @@
     ) }));
   }
 
+  function mediaUrl(photo: Photo, kind: 'thumbnail' | 'preview' | 'original') {
+    return `${base}/api/media/${photo.id}?kind=${kind}&v=${encodeURIComponent(photo.revision || photo.modifiedAt)}`;
+  }
+
   function bytes(value: number) {
     if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
     return `${(value / (1024 * 1024)).toFixed(1)} MB`;
@@ -102,19 +108,19 @@
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30_000);
     try {
-      const refreshedPhotos: Photo[] = [];
-      let result: PhotoList;
-      do {
-        const params = new URLSearchParams({ q: requestedQuery, offset: String(baseOffset + refreshedPhotos.length), limit: String(Math.min(300, targetCount - refreshedPhotos.length)) });
+      const offsets = Array.from({ length: Math.ceil(targetCount / 300) }, (_, index) => index * 300);
+      const pages = await mapConcurrent(offsets, 4, async offset => {
+        const params = new URLSearchParams({ q: requestedQuery, offset: String(baseOffset + offset), limit: String(Math.min(300, targetCount - offset)) });
         if (requestedFolder) params.set('folder', requestedFolder);
         const response = await fetch(`${base}/api/photos?${params}`, { signal: controller.signal });
         const body = await response.json();
-        if (response.status === 401) { location.reload(); return; }
+        if (response.status === 401) { location.reload(); throw new Error('Your session has expired.'); }
         if (!response.ok) throw new Error(body.error || 'Your photos could not be loaded. Please try again.');
-        if (request !== fetchNumber) return;
-        result = body as PhotoList;
-        refreshedPhotos.push(...result.photos);
-      } while (result.hasMore && result.photos.length > 0 && refreshedPhotos.length < targetCount);
+        return body as PhotoList;
+      });
+      if (request !== fetchNumber) return;
+      const refreshedPhotos = pages.flatMap(page => page.photos);
+      const result = pages[pages.length - 1];
       photos = append ? [...existingPhotos, ...refreshedPhotos] : refreshedPhotos;
       data = { ...data, members: result.members };
       folders = result.folders;
@@ -243,7 +249,7 @@
     }
     const viewable = sortedPhotos.filter((item) => item.previewStatus === 'ready' && !imageErrors.has(item.id));
     viewer = new PhotoSwipe({
-      dataSource: viewable.map((item) => ({ src: `${base}/api/media/${item.id}?kind=preview`, msrc: `${base}/api/media/${item.id}?kind=thumbnail`, width: item.width || 1600, height: item.height || 1200, alt: item.name })),
+      dataSource: viewable.map((item) => ({ src: mediaUrl(item, 'preview'), msrc: mediaUrl(item, 'thumbnail'), width: item.width || 1600, height: item.height || 1200, alt: item.name })),
       index: viewable.findIndex((item) => item.id === photo.id), bgOpacity: 0.97,
       showHideAnimationType: 'fade', errorMsg: 'Immich has not finished this preview. You can still download the original.',
     });
@@ -252,7 +258,7 @@
       activeViewer.ui?.registerElement({
         name: 'download-original', order: 8, isButton: true, tagName: 'a', html: '↓ Download original',
         onInit: (element) => {
-          const update = () => { const current = viewable[activeViewer.currIndex]; if (current) { (element as HTMLAnchorElement).href = `${base}/api/media/${current.id}?kind=original`; element.setAttribute('download', current.name); element.setAttribute('aria-label', `Download ${current.name}`); } };
+          const update = () => { const current = viewable[activeViewer.currIndex]; if (current) { (element as HTMLAnchorElement).href = mediaUrl(current, 'original'); element.setAttribute('download', current.name); element.setAttribute('aria-label', `Download ${current.name}`); } };
           activeViewer.on('change', update); update();
         },
       });
@@ -278,27 +284,29 @@
     if (uploading) return;
     uploading = true;
     const completedBefore = uploads.filter((entry) => entry.status === 'done').length;
-    while (uploads.some((item) => item.status === 'waiting')) {
-      const item = uploads.find((entry) => entry.status === 'waiting')!;
-      await new Promise<void>((resolve) => {
-        const xhr = new XMLHttpRequest();
-        updateUpload(item.id, { status: 'uploading', xhr, error: undefined, progress: 0 });
-        xhr.open('POST', `${base}/api/upload`);
-        xhr.setRequestHeader('X-Filename', encodeURIComponent(item.file.name));
-        xhr.setRequestHeader('Content-Type', item.file.type || 'application/octet-stream');
-        xhr.upload.onprogress = (event) => { if (event.lengthComputable) updateUpload(item.id, { progress: Math.round(event.loaded / event.total * 100) }); };
-        xhr.onload = () => {
-          let body: { error?: string } = {};
-          try { body = JSON.parse(xhr.responseText); } catch { /* Handle response with a useful fallback. */ }
-          if (xhr.status >= 200 && xhr.status < 300) updateUpload(item.id, { status: 'done', progress: 100, xhr: undefined });
-          else updateUpload(item.id, { status: 'error', error: body.error || `Upload failed (${xhr.status}). Please retry.`, xhr: undefined });
-          resolve();
-        };
-        xhr.onerror = () => { updateUpload(item.id, { status: 'error', error: 'Connection interrupted. Please retry.', xhr: undefined }); resolve(); };
-        xhr.onabort = () => { updateUpload(item.id, { status: 'cancelled', xhr: undefined }); resolve(); };
-        xhr.send(item.file);
-      });
-    }
+    await Promise.all(Array.from({ length: 2 }, async () => {
+      while (uploads.some((item) => item.status === 'waiting')) {
+        const item = uploads.find((entry) => entry.status === 'waiting')!;
+        await new Promise<void>((resolve) => {
+          const xhr = new XMLHttpRequest();
+          updateUpload(item.id, { status: 'uploading', xhr, error: undefined, progress: 0 });
+          xhr.open('POST', `${base}/api/upload`);
+          xhr.setRequestHeader('X-Filename', encodeURIComponent(item.file.name));
+          xhr.setRequestHeader('Content-Type', item.file.type || 'application/octet-stream');
+          xhr.upload.onprogress = (event) => { if (event.lengthComputable) updateUpload(item.id, { progress: Math.round(event.loaded / event.total * 100) }); };
+          xhr.onload = () => {
+            let body: { error?: string } = {};
+            try { body = JSON.parse(xhr.responseText); } catch { /* Handle response with a useful fallback. */ }
+            if (xhr.status >= 200 && xhr.status < 300) updateUpload(item.id, { status: 'done', progress: 100, xhr: undefined });
+            else updateUpload(item.id, { status: 'error', error: body.error || `Upload failed (${xhr.status}). Please retry.`, xhr: undefined });
+            resolve();
+          };
+          xhr.onerror = () => { updateUpload(item.id, { status: 'error', error: 'Connection interrupted. Please retry.', xhr: undefined }); resolve(); };
+          xhr.onabort = () => { updateUpload(item.id, { status: 'cancelled', xhr: undefined }); resolve(); };
+          xhr.send(item.file);
+        });
+      }
+    }));
     uploading = false;
     if (uploads.filter((entry) => entry.status === 'done').length > completedBefore) {
       fastPollingUntil = Date.now() + 120_000;
@@ -432,11 +440,11 @@
             {@const box = group.layout.boxes[index]}
             {#if box}<article class:selected={selected.has(photo.id)} class:pending={photo.previewStatus !== 'ready' || imageErrors.has(photo.id)} class="photo-tile" style:left={`${box.left}px`} style:top={`${box.top}px`} style:width={`${box.width}px`} style:height={`${box.height}px`}>
               <button class="photo-open" on:click={() => openPhoto(photo)} aria-label={`Open ${photo.name}, shared by ${photo.owner}`} title={`${photo.name} · ${photo.owner}`}>
-                {#if photo.previewStatus === 'ready' && !imageErrors.has(photo.id)}<img src={`${base}/api/media/${photo.id}?kind=thumbnail`} alt={photo.name} loading="lazy" on:error={() => { imageErrors = new Set([...imageErrors, photo.id]); }} />{:else}<div class="pending-preview"><Icon name={photo.previewStatus === 'pending' ? 'clock' : 'image'} size={24} stroke={1.5} /><span>{photo.previewStatus === 'pending' ? 'Processing' : 'No preview'}</span></div>{/if}
+                {#if photo.previewStatus === 'ready' && !imageErrors.has(photo.id)}<img src={mediaUrl(photo, 'thumbnail')} alt={photo.name} loading={(photoIndexes.get(photo.id) || 0) < 12 ? 'eager' : 'lazy'} decoding="async" fetchpriority={(photoIndexes.get(photo.id) || 0) < 4 ? 'high' : 'auto'} on:error={() => { imageErrors = new Set([...imageErrors, photo.id]); }} />{:else}<div class="pending-preview"><Icon name={photo.previewStatus === 'pending' ? 'clock' : 'image'} size={24} stroke={1.5} /><span>{photo.previewStatus === 'pending' ? 'Processing' : 'No preview'}</span></div>{/if}
                 <span class="photo-gradient"></span><span class="photo-owner">{photo.owner}</span>
               </button>
               <label class="photo-checkbox" class:checked={selected.has(photo.id)}><input type="checkbox" checked={selected.has(photo.id)} on:change={() => toggleSelect(photo.id)} aria-label={`Select ${photo.name}`} /><span><Icon name="check" size={15} /></span></label>
-              <a class="photo-download" href={`${base}/api/media/${photo.id}?kind=original`} download={photo.name} title="Download original" aria-label={`Download ${photo.name}`}><Icon name="download" size={17} /></a>
+              <a class="photo-download" href={mediaUrl(photo, 'original')} download={photo.name} title="Download original" aria-label={`Download ${photo.name}`}><Icon name="download" size={17} /></a>
             </article>{/if}
           {/each}
             </div>
@@ -464,5 +472,5 @@
   </dialog>
   {#if dragging}<div class="drop-overlay"><div><span class="drop-icon"><Icon name="upload" size={42} /></span><h2>Drop your moments here</h2><p>Uploading to <strong>{data.user.name}’s folder</strong></p><span>Everyone in the collection can view and download them.</span></div></div>{/if}
   {#if uploads.length}<section class="upload-panel" aria-label="Upload progress" aria-live="polite"><header><span class="upload-panel-icon"><Icon name={activeUploads ? 'upload' : 'check'} size={19} /></span><div><strong>{activeUploads ? `Uploading ${uploads.length - completedUploads} ${uploads.length - completedUploads === 1 ? 'photo' : 'photos'}` : `${completedUploads} of ${uploads.length} uploaded`}</strong><span><Icon name="folder" size={12} /> {data.user.name} / {data.user.folder}</span></div><button class="icon-button" on:click={() => { uploadPanelOpen = !uploadPanelOpen; }} aria-label={uploadPanelOpen ? 'Minimize uploads' : 'Expand uploads'}><span>{uploadPanelOpen ? '−' : '+'}</span></button>{#if !activeUploads}<button class="icon-button" on:click={() => { uploads = []; }} aria-label="Close uploads"><Icon name="close" size={17} /></button>{/if}</header>{#if uploadPanelOpen}<div class="upload-list">{#each uploads as item (item.id)}<div class="upload-row"><span class="upload-file-icon"><Icon name="image" size={21} /></span><div class="upload-item-body"><strong>{item.file.name}</strong><span class:error-text={item.status === 'error'}>{item.status === 'done' ? 'Saved · Immich preview processing' : item.status === 'uploading' ? `${item.progress}% · ${bytes(item.file.size)}` : item.status === 'error' ? item.error : item.status === 'cancelled' ? 'Cancelled' : 'Waiting to upload'}</span>{#if item.status === 'uploading'}<div class="upload-progress"><div style:width={`${item.progress}%`}></div></div>{/if}</div>{#if item.status === 'done'}<span class="upload-success"><Icon name="check" size={18} /></span>{:else if item.status === 'error' || item.status === 'cancelled'}<button class="icon-button" on:click={() => retryUpload(item)} disabled={item.file.size > data.maxUploadBytes} aria-label={`Retry ${item.file.name}`}><Icon name="refresh" size={16} /></button>{:else}<button class="icon-button" on:click={() => cancelUpload(item)} aria-label={`Cancel ${item.file.name}`}><Icon name="close" size={16} /></button>{/if}</div>{/each}</div><footer>Shared with everyone in this collection.</footer>{/if}</section>{/if}
-  <dialog class="pending-dialog" bind:this={pendingDialog}><button class="icon-button dialog-close" on:click={() => pendingDialog.close()} aria-label="Close photo details"><Icon name="close" /></button>{#if pendingPhoto}<div class="dialog-image"><Icon name="image" size={52} stroke={1.2} /></div><Badge size="small" color="secondary">Original safely stored</Badge><h2>{pendingPhoto.name}</h2><p>{pendingPhoto.previewStatus === 'pending' ? 'Immich is preparing this photo’s preview. The original is already yours to enjoy.' : 'The Immich preview is currently unavailable. You can still download the original photo.'}</p><div class="dialog-metadata"><span>Shared by {pendingPhoto.owner}</span><span>{bytes(pendingPhoto.bytes)}</span></div><a class="primary-button button-link" href={`${base}/api/media/${pendingPhoto.id}?kind=original`} download={pendingPhoto.name}><Icon name="download" size={18} />Download original</a>{/if}</dialog>
+  <dialog class="pending-dialog" bind:this={pendingDialog}><button class="icon-button dialog-close" on:click={() => pendingDialog.close()} aria-label="Close photo details"><Icon name="close" /></button>{#if pendingPhoto}<div class="dialog-image"><Icon name="image" size={52} stroke={1.2} /></div><Badge size="small" color="secondary">Original safely stored</Badge><h2>{pendingPhoto.name}</h2><p>{pendingPhoto.previewStatus === 'pending' ? 'Immich is preparing this photo’s preview. The original is already yours to enjoy.' : 'The Immich preview is currently unavailable. You can still download the original photo.'}</p><div class="dialog-metadata"><span>Shared by {pendingPhoto.owner}</span><span>{bytes(pendingPhoto.bytes)}</span></div><a class="primary-button button-link" href={mediaUrl(pendingPhoto, 'original')} download={pendingPhoto.name}><Icon name="download" size={18} />Download original</a>{/if}</dialog>
 {/if}

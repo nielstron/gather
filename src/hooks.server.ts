@@ -32,7 +32,10 @@ export const handle: Handle = ({ event, resolve }) => withSettings(async () => {
   response.headers.set('x-content-type-options', 'nosniff');
   response.headers.set('x-frame-options', 'DENY');
   // HTML can contain private member details, so it must not enter a shared cache.
-  if (isApi || response.headers.get('content-type')?.includes('text/html')) {
+  const privatePreview = pathname.startsWith('/api/media/') && response.ok &&
+    response.headers.get('content-type')?.startsWith('image/') &&
+    response.headers.get('cache-control')?.startsWith('private, max-age=');
+  if ((isApi && !privatePreview) || response.headers.get('content-type')?.includes('text/html')) {
     response.headers.set('cache-control', 'private, no-store');
   }
   return response;
