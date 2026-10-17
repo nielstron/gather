@@ -14,7 +14,7 @@ A successful request returns `204` and queues asynchronous work. It discovers ne
 
 The path must be an existing, readable absolute directory within the requested library's import paths. Relative paths, traversal segments, files, and symbolic-link paths are rejected. Workers validate the path again before running. Scoped discovery also disables following symbolic links below the selected directory. The database query includes a directory boundary and escapes SQL LIKE metacharacters so similarly named siblings cannot match. Deletions and modifications of existing assets are checked only within the selected subtree.
 
-Gather uses this endpoint by default, passing its selected `IMMICH_PHOTO_ROOT`. An unmodified Immich returns `404`; Gather reports the missing extension and **does not fall back to a full-library scan**. Operators who intentionally want standard whole-library scans can explicitly set `IMMICH_SCAN_MODE=library`.
+Gather uses this endpoint by default, passing its selected `IMMICH_PHOTO_ROOT`. If an unmodified Immich returns `404`, Gather automatically falls back to `POST /api/libraries/{id}/scan` for the same library, using the same admin key and cooldown. Authorization, validation, and server errors do not trigger a broader scan. Set `IMMICH_SCAN_MODE=library` to skip the scoped request and use whole-library scans directly.
 
 ## Build and install
 
@@ -35,7 +35,7 @@ services:
 
 Then run `docker compose up -d --no-deps immich-server` in that installation. No database migration or library reconfiguration is needed. Updating Immich requires reviewing and rebasing this extension; the patch intentionally pins the upstream source and image. The integration is a local extension, not an upstream Immich release.
 
-To roll back, remove the image override and recreate the server using the original v3.2.2 image. Existing files and assets remain compatible. Gather will report that folder scans are unavailable until the extension is restored or the operator explicitly enables library-wide scans.
+To roll back, remove the image override and recreate the server using the original v3.2.2 image. Existing files and assets remain compatible. Gather will automatically use whole-library scans while the extension is absent.
 
 ## Verify and review
 

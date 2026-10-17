@@ -249,13 +249,17 @@ async function performScan(config: Config, key: string): Promise<LibraryScanResu
   const generation = scanSignature;
   const work = (async (): Promise<LibraryScanResult> => {
     try {
-      const scoped = process.env.IMMICH_SCAN_MODE !== 'library';
+      let scoped = process.env.IMMICH_SCAN_MODE !== 'library';
       const endpoint = `/libraries/${encodeURIComponent(config.library)}/scan${scoped ? '/path' : ''}`;
-      const response = await request({ ...config, key }, endpoint, scoped ? {
+      let response = await request({ ...config, key }, endpoint, scoped ? {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: config.root }),
       } : { method: 'POST' });
       await response.body?.cancel();
-      if (scoped && response.status === 404) return { state: 'unavailable', message: 'This Immich server needs the Gather folder-scan API extension. No full-library scan was requested.' };
+      if (scoped && response.status === 404) {
+        scoped = false;
+        response = await request({ ...config, key }, `/libraries/${encodeURIComponent(config.library)}/scan`, { method: 'POST' });
+        await response.body?.cancel();
+      }
       if (response.status !== 204) throw unavailable();
       // Retry missing mappings promptly after the scan has been queued.
       if (config.signature === signature) {

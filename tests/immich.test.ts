@@ -209,17 +209,47 @@ test('the trailing scan runs after the cooldown to catch files arriving during a
 });
 
 
-test('an unpatched Immich server never falls back to scanning the whole library', async () => {
+test('an unmodified Immich server falls back to scanning the configured library', async () => {
   configure();
-  handler = (_req, res) => res.writeHead(404).end();
+  process.env.IMMICH_SCAN_API_KEY = 'fallback-admin-key';
+  handler = (req, res, body) => {
+    assert.equal(req.headers['x-api-key'], 'fallback-admin-key');
+    if (req.url?.endsWith('/scan/path')) {
+      assert.deepEqual(body, { path: '/external/shared photos' });
+      res.writeHead(404).end();
+    } else {
+      assert.equal(req.url, `/api/libraries/${LIBRARY}/scan`);
+      assert.deepEqual(body, {});
+      res.writeHead(204).end();
+    }
+  };
   const result = await requestLibraryScan();
-  assert.equal(result.state, 'unavailable');
-  assert.match(result.message!, /folder-scan API extension/);
-  assert.deepEqual(requests.map(request => request.url), [`/api/libraries/${LIBRARY}/scan/path`]);
+  assert.equal(result.state, 'queued');
+  assert.match(result.message!, /configured library/);
+  assert.deepEqual(requests.map(request => request.url), [
+    `/api/libraries/${LIBRARY}/scan/path`, `/api/libraries/${LIBRARY}/scan`,
+  ]);
+  assert.equal((await requestLibraryScan()).state, 'scheduled');
+  assert.equal(requests.length, 2, 'fallback shares the normal scan cooldown');
 });
 
+test('authorization, validation, and server errors do not trigger a broader scan', async () => {
+  for (const status of [400, 401, 403, 500]) {
+    configure();
+    handler = (_req, res) => res.writeHead(status).end();
+    assert.equal((await requestLibraryScan()).state, 'unavailable');
+    assert.deepEqual(requests.map(request => request.url), [`/api/libraries/${LIBRARY}/scan/path`]);
+  }
+});
 
-test('whole-library scans require explicit operator configuration', async () => {
+test('a failed full-library fallback never claims that a scan was queued', async () => {
+  configure();
+  handler = (req, res) => res.writeHead(req.url?.endsWith('/scan/path') ? 404 : 403).end();
+  assert.equal((await requestLibraryScan()).state, 'unavailable');
+  assert.equal(requests.length, 2);
+});
+
+test('explicit library mode skips the folder-scan request', async () => {
   configure();
   process.env.IMMICH_SCAN_MODE = 'library';
   handler = (req, res, body) => {
