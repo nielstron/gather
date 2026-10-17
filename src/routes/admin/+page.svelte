@@ -46,7 +46,7 @@
       await request('session', { action: configured ? 'login' : 'setup', password, token: setupToken });
       password = ''; setupToken = ''; configured = true; authenticated = true;
       apply(await request('config'));
-    } catch (cause) { error = (cause as Error).message; }
+    } catch (cause) { error = (cause as Error).message; if (!overview) authenticated = false; }
     finally { busy = false; }
   }
 
@@ -60,7 +60,7 @@
       if (name === 'revoke-share') generatedLink = '';
       notice = result.message || (result.link ? 'Invitation ready. Copy it below.' : 'Done.');
       if (name === 'create-member') { memberName = ''; memberFolder = ''; }
-    } catch (cause) { error = (cause as Error).message; }
+    } catch (cause) { error = (cause as Error).message; if (!overview) authenticated = false; }
     finally { busy = false; }
   }
 
@@ -84,7 +84,7 @@
       const session = await request('session');
       configured = session.configured; authenticated = session.authenticated;
       if (authenticated) apply(await request('config'));
-    } catch (cause) { error = (cause as Error).message; }
+    } catch (cause) { error = (cause as Error).message; if (!overview) authenticated = false; }
     finally { loading = false; }
   });
 </script>

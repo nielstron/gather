@@ -77,3 +77,14 @@ test('request snapshots retain the selected collection during concurrent changes
   await request;
   assert.equal(settings.readSettings().collectionName, 'Another collection');
 });
+
+
+test('a fresh installation creates its configured available-folder root', () => {
+  const previous = process.env.PHOTO_ALLOWED_ROOT;
+  const root = path.join(directory, 'fresh-photos');
+  process.env.PHOTO_ALLOWED_ROOT = root;
+  try {
+    assert.equal(admin.allowedPhotoRoot(), root);
+    assert.equal(statSync(root).isDirectory(), true);
+  } finally { process.env.PHOTO_ALLOWED_ROOT = previous; }
+});

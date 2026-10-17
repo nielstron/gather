@@ -69,7 +69,11 @@ export function logoutAdmin(token: string | undefined) {
   if (token) db().prepare('DELETE FROM sessions WHERE token_hash = ?').run(hash(token));
 }
 
-export function allowedPhotoRoot() { return realpathSync(path.resolve(process.env.PHOTO_ALLOWED_ROOT || process.env.PHOTO_ROOT || './var/photos')); }
+export function allowedPhotoRoot() {
+  const root = path.resolve(process.env.PHOTO_ALLOWED_ROOT || process.env.PHOTO_ROOT || './var/photos');
+  mkdirSync(root, { recursive: true });
+  return realpathSync(root);
+}
 
 export function validatePhotoRoot(value: string) {
   const root = allowedPhotoRoot();
