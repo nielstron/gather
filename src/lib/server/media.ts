@@ -11,7 +11,6 @@ import type { Member, Photo } from '../types';
 
 const extensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif', '.tif', '.tiff', '.heic', '.heif']);
 const formats = new Set(['jpeg', 'png', 'webp', 'avif', 'gif', 'tiff', 'heif']);
-const metadata = new Map<string, { version: string; width: number; height: number }>();
 let scanCache: { root: string; time: number; photos: Photo[] } | undefined;
 let scanning: Promise<Photo[]> | undefined;
 let scanningRoot = '';
@@ -66,27 +65,11 @@ export async function openPhoto(id: string): Promise<{ handle: FileHandle; relat
   }
 }
 
-async function photoInfo(relative: string, members: Member[]): Promise<Photo | null> {
-  const absolute = path.join(config.photoRoot, relative);
-  const stat = await lstat(absolute);
+async function photoInfo(relative: string, members: Member[], dimensions = { width: 4, height: 3 }): Promise<Photo | null> {
+  const stat = await lstat(path.join(config.photoRoot, relative));
   if (!stat.isFile() || stat.isSymbolicLink()) return null;
-  const version = `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
-  let dimensions = metadata.get(absolute);
-  if (!dimensions || dimensions.version !== version) {
-    try {
-      // Metadata inspection only. All visible thumbnails and previews come from Immich.
-      const result = await sharp(absolute, { limitInputPixels: 80_000_000 }).metadata();
-      if (!formats.has(result.format || '') || !result.width || !result.height) return null;
-      const rotate = result.orientation && result.orientation >= 5;
-      dimensions = { version, width: rotate ? result.height : result.width, height: rotate ? result.width : result.height };
-    } catch {
-      // Some libvips builds cannot inspect HEIC. Immich can still preview it once indexed.
-      if (!['.heic', '.heif'].includes(path.extname(relative).toLowerCase())) return null;
-      dimensions = { version, width: 4, height: 3 };
-    }
-    if (metadata.size >= 20_000) metadata.clear();
-    metadata.set(absolute, dimensions);
-  }
+  // Listings never read original bytes: mounted/network libraries can be slow.
+  // Immich supplies actual dimensions when enriching the visible gallery page.
   const folder = relative.includes('/') ? relative.split('/')[0] : '';
   return { id: encodeId(relative), name: path.basename(relative), folder, owner: members.find((member) => member.folder === folder)?.name || folder || 'Shared folder', width: dimensions.width, height: dimensions.height, bytes: stat.size, modifiedAt: stat.mtime.toISOString(), previewStatus: 'pending' };
 }
@@ -151,10 +134,13 @@ export async function saveUpload(member: Member, name: string, body: ReadableStr
     } });
     await pipeline(Readable.fromWeb(body as import('node:stream/web').ReadableStream<Uint8Array>), limiter, createWriteStream(temporary, { flags: 'wx', mode: 0o640 }), { signal });
     if (!size) throw new MediaError(400, 'The file is empty');
+    let dimensions = { width: 4, height: 3 };
     try {
       const info = await sharp(temporary, { limitInputPixels: 80_000_000 }).metadata();
       if (!formats.has(info.format || '') || !info.width || !info.height) throw new Error('Unsupported image');
       if (info.width * info.height > 80_000_000) throw new Error('Image too large');
+      const rotate = info.orientation && info.orientation >= 5;
+      dimensions = { width: rotate ? info.height : info.width, height: rotate ? info.width : info.height };
       // Fully decode to reject truncated files; this does not create a thumbnail.
       await sharp(temporary, { limitInputPixels: 80_000_000, failOn: 'warning' }).stats();
     } catch {
@@ -170,7 +156,7 @@ export async function saveUpload(member: Member, name: string, body: ReadableStr
     }
     if (!saved) throw new MediaError(409, 'Could not choose a unique filename. Please retry.');
     invalidatePhotos();
-    const photo = await photoInfo(`${member.folder}/${saved}`, [member]);
+    const photo = await photoInfo(`${member.folder}/${saved}`, [member], dimensions);
     if (!photo) throw new MediaError(500, 'Photo saved but could not be inspected');
     return photo;
   } finally {

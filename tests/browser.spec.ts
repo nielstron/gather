@@ -254,3 +254,28 @@ test('administrator configures a collection and invitations through the UI', asy
   expect((await page.request.get(`${origin}${basePath}/api/admin/config`)).status()).toBe(401);
   expect(errors).toEqual([]);
 });
+
+
+test('a stalled gallery request stops loading and offers a working retry', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invitation = auth.createMember('Slow connection', 'slow-connection');
+  let unblock!: () => void;
+  let requested!: () => void;
+  const pending = new Promise<void>(resolve => { requested = resolve; });
+  await page.clock.install();
+  await page.route('**/api/photos?*', async route => {
+    requested();
+    await new Promise<void>(resolve => { unblock = resolve; });
+    await route.abort().catch(() => {});
+  });
+  await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
+  await pending;
+  await page.clock.fastForward(30_001);
+  await expect(page.getByRole('alert')).toContainText('Loading is taking longer than expected');
+  await expect(page.getByText('Gathering your photos…', { exact: true })).toHaveCount(0);
+  unblock();
+  await page.unrouteAll({ behavior: 'wait' });
+  await page.getByRole('button', { name: 'Try again', exact: true }).click();
+  await expect(page.locator('.photo-tile').first()).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});

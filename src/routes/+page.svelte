@@ -99,13 +99,15 @@
     const baseOffset = append ? existingPhotos.length : 0;
     loading = true;
     error = '';
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30_000);
     try {
       const refreshedPhotos: Photo[] = [];
       let result: PhotoList;
       do {
         const params = new URLSearchParams({ q: requestedQuery, offset: String(baseOffset + refreshedPhotos.length), limit: String(Math.min(300, targetCount - refreshedPhotos.length)) });
         if (requestedFolder) params.set('folder', requestedFolder);
-        const response = await fetch(`${base}/api/photos?${params}`);
+        const response = await fetch(`${base}/api/photos?${params}`, { signal: controller.signal });
         const body = await response.json();
         if (response.status === 401) { location.reload(); return; }
         if (!response.ok) throw new Error(body.error || 'Your photos could not be loaded. Please try again.');
@@ -121,8 +123,11 @@
       previewService = result.previewService;
       imageErrors = new Set();
     } catch (cause) {
-      if (request === fetchNumber) error = cause instanceof Error ? cause.message : 'Unable to load your photos.';
+      if (request === fetchNumber) error = controller.signal.aborted
+        ? 'Loading is taking longer than expected. Please try again.'
+        : cause instanceof Error ? cause.message : 'Unable to load your photos.';
     } finally {
+      clearTimeout(timeout);
       if (request === fetchNumber) loading = false;
     }
   }

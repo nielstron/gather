@@ -217,3 +217,24 @@ test('photo caches remain isolated when requests use different collection snapsh
   const restored = await media.scanPhotos([]);
   assert.ok(restored.every(photo => photo.name !== 'different.png'));
 });
+
+
+test('gallery discovery does not inspect original image bytes before returning files', async (t) => {
+  const filename = path.join(photoRoot, 'alice', 'cold-network-photo.png');
+  writeFileSync(filename, png);
+  const metadata = t.mock.method(sharp.prototype, 'metadata', () => {
+    throw new Error('Gallery discovery must not open an image decoder');
+  });
+  try {
+    media.invalidatePhotos();
+    const photos = await media.scanPhotos([alice]);
+    const discovered = photos.find(photo => photo.name === 'cold-network-photo.png');
+    assert.ok(discovered);
+    assert.equal(discovered.bytes, png.length);
+    assert.equal(metadata.mock.callCount(), 0);
+  } finally {
+    metadata.mock.restore();
+    rmSync(filename);
+    media.invalidatePhotos();
+  }
+});

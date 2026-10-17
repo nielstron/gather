@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { after, before, test } from 'node:test';
 import { enrichPhotos, fetchImmichImage, ImmichError, requestLibraryScan } from '../src/lib/server/immich.js';
@@ -19,6 +22,8 @@ const server = createServer(async (req, res) => {
   handler(req, res, body);
 });
 const saved = { ...process.env };
+const dataRoot = mkdtempSync(path.join(os.tmpdir(), 'gather-immich-'));
+process.env.DATA_ROOT = dataRoot;
 before(async () => {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -26,9 +31,10 @@ before(async () => {
   base = `http://127.0.0.1:${address.port}`;
 });
 after(async () => {
-  for (const key of ['IMMICH_URL', 'IMMICH_API_KEY', 'IMMICH_SCAN_API_KEY', 'IMMICH_LIBRARY_ID', 'IMMICH_PHOTO_ROOT', 'IMMICH_SCAN_MODE']) {
+  for (const key of ['IMMICH_URL', 'IMMICH_API_KEY', 'IMMICH_SCAN_API_KEY', 'IMMICH_LIBRARY_ID', 'IMMICH_PHOTO_ROOT', 'IMMICH_SCAN_MODE', 'DATA_ROOT']) {
     if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
   }
+  rmSync(dataRoot, { recursive: true, force: true });
   server.closeAllConnections();
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
