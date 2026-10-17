@@ -1,0 +1,209 @@
+diff --git a/server/src/controllers/library.controller.ts b/server/src/controllers/library.controller.ts
+index 30feef7..4ef552f 100644
+--- a/server/src/controllers/library.controller.ts
++++ b/server/src/controllers/library.controller.ts
+@@ -3,6 +3,7 @@ import { ApiExcludeEndpoint, ApiTags } from '@nestjs/swagger';
+ import { Endpoint, HistoryBuilder } from 'src/decorators';
+ import {
+   CreateLibraryDto,
++  ScanLibraryPathDto,
+   LibraryResponseDto,
+   LibraryStatsResponseDto,
+   UpdateLibraryDto,
+@@ -111,6 +112,18 @@ export class LibraryController {
+     return this.service.getStatistics(id);
+   }
+ 
++  @Post(':id/scan/path')
++  @Authenticated({ permission: Permission.LibraryUpdate, admin: true })
++  @HttpCode(HttpStatus.NO_CONTENT)
++  @Endpoint({
++    summary: 'Scan a library directory',
++    description: 'Recursively import and refresh assets only within an existing directory of this library. Other directories and library import paths are unchanged.',
++    history: new HistoryBuilder().added('v3'),
++  })
++  scanLibraryPath(@Param() { id }: UUIDParamDto, @Body() dto: ScanLibraryPathDto): Promise<void> {
++    return this.service.queueScanPath(id, dto.path);
++  }
++
+   @Post(':id/scan')
+   @Authenticated({ permission: Permission.LibraryUpdate, admin: true })
+   @HttpCode(HttpStatus.NO_CONTENT)
+diff --git a/server/src/dtos/library.dto.ts b/server/src/dtos/library.dto.ts
+index 906a6e6..a5e79a4 100644
+--- a/server/src/dtos/library.dto.ts
++++ b/server/src/dtos/library.dto.ts
+@@ -29,6 +29,7 @@ const UpdateLibrarySchema = z
+ export interface CrawlOptionsDto {
+   pathsToCrawl: string[];
+   includeHidden?: boolean;
++  followSymbolicLinks?: boolean;
+   exclusionPatterns?: string[];
+ }
+ 
+@@ -83,6 +84,12 @@ const LibraryStatsResponseSchema = z
+   })
+   .meta({ id: 'LibraryStatsResponseDto' });
+ 
++const ScanLibraryPathSchema = z.object({
++  path: z.string().min(1).max(4096).describe('Absolute directory within this library to scan recursively'),
++}).strict().meta({ id: 'ScanLibraryPathDto' });
++
++export class ScanLibraryPathDto extends createZodDto(ScanLibraryPathSchema) {}
++
+ export class CreateLibraryDto extends createZodDto(CreateLibrarySchema) {}
+ export class UpdateLibraryDto extends createZodDto(UpdateLibrarySchema) {}
+ export class ValidateLibraryDto extends createZodDto(ValidateLibrarySchema) {}
+diff --git a/server/src/repositories/library.repository.ts b/server/src/repositories/library.repository.ts
+index 60777fe..ce848d8 100644
+--- a/server/src/repositories/library.repository.ts
++++ b/server/src/repositories/library.repository.ts
+@@ -118,7 +118,14 @@ export class LibraryRepository {
+     };
+   }
+ 
+-  streamAssetIds(libraryId: string) {
+-    return this.db.selectFrom('asset').select(['id']).where('libraryId', '=', libraryId).stream();
++  streamAssetIds(libraryId: string, directory?: string) {
++    let query = this.db.selectFrom('asset').select(['id']).where('libraryId', '=', libraryId);
++    if (directory) {
++      // A directory separator prevents sibling-prefix matches; escape LIKE metacharacters.
++      const prefix = directory.replace(/[/]+$/, '') + '/';
++      const pattern = prefix.replaceAll('!', '!!').replaceAll('%', '!%').replaceAll('_', '!_') + '%';
++      query = query.where(sql<boolean>`"originalPath" LIKE ${pattern} ESCAPE '!'`);
++    }
++    return query.stream();
+   }
+ }
+diff --git a/server/src/repositories/storage.repository.ts b/server/src/repositories/storage.repository.ts
+index 7ee74d9..b9f9741 100644
+--- a/server/src/repositories/storage.repository.ts
++++ b/server/src/repositories/storage.repository.ts
+@@ -232,6 +232,7 @@ export class StorageRepository {
+       caseSensitiveMatch: false,
+       onlyFiles: true,
+       dot: includeHidden,
++      followSymbolicLinks: walkOptions.followSymbolicLinks ?? true,
+       ignore: exclusionPatterns,
+     });
+   }
+@@ -250,6 +251,7 @@ export class StorageRepository {
+       caseSensitiveMatch: false,
+       onlyFiles: true,
+       dot: includeHidden,
++      followSymbolicLinks: walkOptions.followSymbolicLinks ?? true,
+       ignore: exclusionPatterns,
+     });
+ 
+diff --git a/server/src/services/library.service.ts b/server/src/services/library.service.ts
+index fa405b9..aa9e10f 100644
+--- a/server/src/services/library.service.ts
++++ b/server/src/services/library.service.ts
+@@ -429,6 +429,39 @@ export class LibraryService extends BaseService {
+     );
+   }
+ 
++  private async validateScanPath(id: string, directory: string): Promise<string> {
++    const library = await this.findOrFail(id);
++    if (!isAbsolute(directory) || directory.includes('\\') || directory.includes('\0') || directory.split('/').includes('..')) {
++      throw new BadRequestException('Scan path must be an absolute directory without traversal segments');
++    }
++    const normalized = path.normalize(directory).replace(/[/]+$/, '') || '/';
++    const contains = (root: string, candidate: string) => {
++      const relative = path.relative(root, candidate);
++      return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !isAbsolute(relative));
++    };
++    if (!library.importPaths.some((root) => contains(path.resolve(root), normalized))) {
++      throw new BadRequestException('Scan path must be within a configured library import path');
++    }
++    const validation = await this.validateImportPath(normalized);
++    if (!validation.isValid) throw new BadRequestException(`Invalid scan path: ${validation.message}`);
++    const resolved = await this.storageRepository.realpath(normalized);
++    if (resolved !== normalized) throw new BadRequestException('Symbolic links are not allowed in a scan path');
++    const roots = await Promise.all(library.importPaths.map(async (root) => {
++      try { return await this.storageRepository.realpath(root); } catch { return undefined; }
++    }));
++    if (!roots.some((root) => root && contains(root, resolved))) {
++      throw new BadRequestException('Scan path resolves outside the library import paths');
++    }
++    return normalized;
++  }
++
++  async queueScanPath(id: string, directory: string) {
++    const scanPath = await this.validateScanPath(id, directory);
++    this.logger.log(`Starting scoped scan of ${scanPath} in library ${id}`);
++    await this.jobRepository.queue({ name: JobName.LibrarySyncFilesQueueAll, data: { id, path: scanPath } });
++    await this.jobRepository.queue({ name: JobName.LibrarySyncAssetsQueueAll, data: { id, path: scanPath } });
++  }
++
+   async queueScan(id: string) {
+     await this.findOrFail(id);
+ 
+@@ -622,7 +655,7 @@ export class LibraryService extends BaseService {
+ 
+     const validImportPaths: string[] = [];
+ 
+-    for (const importPath of library.importPaths) {
++    for (const importPath of job.path ? [await this.validateScanPath(job.id, job.path)] : library.importPaths) {
+       const validation = await this.validateImportPath(importPath);
+       if (validation.isValid) {
+         validImportPaths.push(path.normalize(importPath));
+@@ -639,6 +672,7 @@ export class LibraryService extends BaseService {
+ 
+     const pathsOnDisk = this.storageRepository.walk({
+       pathsToCrawl: validImportPaths,
++      ...(job.path ? { followSymbolicLinks: false } : {}),
+       includeHidden: false,
+       exclusionPatterns: library.exclusionPatterns,
+       take: JOBS_LIBRARY_PAGINATION_SIZE,
+@@ -675,7 +709,7 @@ export class LibraryService extends BaseService {
+       `Finished disk crawl, ${crawlCount} file(s) found on disk and queued ${importCount} file(s) for import into ${library.id}`,
+     );
+ 
+-    await this.libraryRepository.update(job.id, { refreshedAt: new Date() });
++    if (!job.path) await this.libraryRepository.update(job.id, { refreshedAt: new Date() });
+ 
+     return JobStatus.Success;
+   }
+@@ -701,6 +735,26 @@ export class LibraryService extends BaseService {
+       return JobStatus.Skipped;
+     }
+ 
++    if (job.path) {
++      const scanPath = await this.validateScanPath(job.id, job.path);
++      let count = 0;
++      for await (const assets of batched(this.libraryRepository.streamAssetIds(library.id, scanPath), JOBS_LIBRARY_PAGINATION_SIZE)) {
++        count += assets.length;
++        await this.jobRepository.queue({
++          name: JobName.LibrarySyncAssets,
++          data: {
++            libraryId: library.id,
++            importPaths: library.importPaths,
++            exclusionPatterns: library.exclusionPatterns,
++            assetIds: assets.map(({ id }) => id),
++            progressCounter: count,
++          },
++        });
++      }
++      this.logger.log(`Queued checks for ${count} asset(s) within ${scanPath} in library ${library.id}`);
++      return JobStatus.Success;
++    }
++
+     const assetCount = await this.assetRepository.getLibraryAssetCount(job.id);
+     if (!assetCount) {
+       this.logger.log(`Library ${library.id} is empty, no need to check assets`);
+diff --git a/server/src/types.ts b/server/src/types.ts
+index 633ed9b..c9b8c77 100644
+--- a/server/src/types.ts
++++ b/server/src/types.ts
+@@ -412,8 +412,8 @@ export type JobItem =
+ 
+   // Library Management
+   | { name: JobName.LibrarySyncFiles; data: ILibraryFileJob }
+-  | { name: JobName.LibrarySyncFilesQueueAll; data: IEntityJob }
+-  | { name: JobName.LibrarySyncAssetsQueueAll; data: IEntityJob }
++  | { name: JobName.LibrarySyncFilesQueueAll; data: IEntityJob & { path?: string } }
++  | { name: JobName.LibrarySyncAssetsQueueAll; data: IEntityJob & { path?: string } }
+   | { name: JobName.LibrarySyncAssets; data: ILibraryBulkIdsJob }
+   | { name: JobName.LibraryRemoveAsset; data: ILibraryFileJob }
+   | { name: JobName.LibraryDelete; data: IEntityJob }

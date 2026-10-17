@@ -249,14 +249,19 @@ async function performScan(config: Config, key: string): Promise<LibraryScanResu
   const generation = scanSignature;
   const work = (async (): Promise<LibraryScanResult> => {
     try {
-      const response = await request({ ...config, key }, `/libraries/${encodeURIComponent(config.library)}/scan`, { method: 'POST' });
+      const scoped = process.env.IMMICH_SCAN_MODE !== 'library';
+      const endpoint = `/libraries/${encodeURIComponent(config.library)}/scan${scoped ? '/path' : ''}`;
+      const response = await request({ ...config, key }, endpoint, scoped ? {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: config.root }),
+      } : { method: 'POST' });
       await response.body?.cancel();
+      if (scoped && response.status === 404) return { state: 'unavailable', message: 'This Immich server needs the Gather folder-scan API extension. No full-library scan was requested.' };
       if (response.status !== 204) throw unavailable();
       // Retry missing mappings promptly after the scan has been queued.
       if (config.signature === signature) {
         for (const [original, entry] of cache) if (!entry.asset?.previewReady) cache.delete(original);
       }
-      return { state: 'queued', message: 'Immich is scanning this shared library and will create previews for new photos.' };
+      return { state: 'queued', message: scoped ? 'Immich is scanning only the selected shared folder and will create previews for new photos.' : 'Immich is scanning the configured library and will create previews for new photos.' };
     } catch {
       return { state: 'unavailable', message: 'Immich could not start the scan. The host must provide an admin API key with library.update permission.' };
     }
@@ -275,7 +280,7 @@ export async function requestLibraryScan(): Promise<LibraryScanResult> {
   try { config = configuration(); } catch { return { state: 'unavailable', message: 'The Immich connection settings need attention.' }; }
   if (!config) return { state: 'unconfigured', message: 'The host has not connected Immich previews yet.' };
   const key = readSettings().immichScanApiKey || config.key;
-  const current = createHash('sha256').update(config.signature).update(key).digest('hex');
+  const current = createHash('sha256').update(config.signature).update(key).update(process.env.IMMICH_SCAN_MODE || 'path').digest('hex');
   if (current !== scanSignature) {
     if (trailingScan) clearTimeout(trailingScan);
     trailingScan = undefined;

@@ -57,7 +57,7 @@ test.beforeAll(async () => {
   server = createServer(async (request, response) => {
     try {
       const key = request.headers['x-api-key'];
-      if (request.url === `/api/libraries/${libraryId}/scan` && request.method === 'POST') {
+      if (request.url === `/api/libraries/${libraryId}/scan/path` && request.method === 'POST') {
         if (key !== 'test-scan-key') { response.writeHead(403).end(); return; }
         scans++; await indexFiles(); response.writeHead(204).end(); return;
       }

@@ -1,0 +1,157 @@
+diff --git a/open-api/immich-openapi-specs.json b/open-api/immich-openapi-specs.json
+index f655a96..072c606 100644
+--- a/open-api/immich-openapi-specs.json
++++ b/open-api/immich-openapi-specs.json
+@@ -7771,6 +7771,63 @@
+         "x-immich-state": "Stable"
+       }
+     },
++    "/libraries/{id}/scan/path": {
++      "post": {
++        "description": "Recursively import and refresh assets only within an existing directory of this library. Other directories and library import paths are unchanged.",
++        "operationId": "scanLibraryPath",
++        "parameters": [
++          {
++            "name": "id",
++            "required": true,
++            "in": "path",
++            "schema": {
++              "format": "uuid",
++              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
++              "type": "string"
++            }
++          }
++        ],
++        "responses": {
++          "204": {
++            "description": ""
++          }
++        },
++        "security": [
++          {
++            "bearer": []
++          },
++          {
++            "cookie": []
++          },
++          {
++            "api_key": []
++          }
++        ],
++        "summary": "Scan a library directory",
++        "tags": [
++          "Libraries"
++        ],
++        "x-immich-admin-only": true,
++        "x-immich-history": [
++          {
++            "version": "v3",
++            "state": "Added"
++          }
++        ],
++        "x-immich-permission": "library.update",
++        "x-immich-state": "Stable",
++        "requestBody": {
++          "required": true,
++          "content": {
++            "application/json": {
++              "schema": {
++                "$ref": "#/components/schemas/ScanLibraryPathDto"
++              }
++            }
++          }
++        }
++      }
++    },
+     "/libraries/{id}/statistics": {
+       "get": {
+         "description": "Retrieve statistics for a specific external library, including number of videos, images, and storage usage.",
+@@ -26589,6 +26646,21 @@
+         ],
+         "type": "object"
+       },
++      "ScanLibraryPathDto": {
++        "type": "object",
++        "properties": {
++          "path": {
++            "type": "string",
++            "minLength": 1,
++            "maxLength": 4096,
++            "description": "Absolute directory within this library to scan recursively"
++          }
++        },
++        "required": [
++          "path"
++        ],
++        "additionalProperties": false
++      },
+       "SearchAlbumResponseDto": {
+         "properties": {
+           "count": {
+@@ -30279,42 +30351,42 @@
+             "type": "number"
+           },
+           "x1": {
+-            "description": "Top-left X coordinate (normalized 0–1)",
++            "description": "Top-left X coordinate (normalized 0\u20131)",
+             "format": "double",
+             "type": "number"
+           },
+           "x2": {
+-            "description": "Top-right X coordinate (normalized 0–1)",
++            "description": "Top-right X coordinate (normalized 0\u20131)",
+             "format": "double",
+             "type": "number"
+           },
+           "x3": {
+-            "description": "Bottom-right X coordinate (normalized 0–1)",
++            "description": "Bottom-right X coordinate (normalized 0\u20131)",
+             "format": "double",
+             "type": "number"
+           },
+           "x4": {
+-            "description": "Bottom-left X coordinate (normalized 0–1)",
++            "description": "Bottom-left X coordinate (normalized 0\u20131)",
+             "format": "double",
+             "type": "number"
+           },
+           "y1": {
+-            "description": "Top-left Y coordinate (normalized 0–1)",
++            "description": "Top-left Y coordinate (normalized 0\u20131)",
+             "format": "double",
+             "type": "number"
+           },
+           "y2": {
+-            "description": "Top-right Y coordinate (normalized 0–1)",
++            "description": "Top-right Y coordinate (normalized 0\u20131)",
+             "format": "double",
+             "type": "number"
+           },
+           "y3": {
+-            "description": "Bottom-right Y coordinate (normalized 0–1)",
++            "description": "Bottom-right Y coordinate (normalized 0\u20131)",
+             "format": "double",
+             "type": "number"
+           },
+           "y4": {
+-            "description": "Bottom-left Y coordinate (normalized 0–1)",
++            "description": "Bottom-left Y coordinate (normalized 0\u20131)",
+             "format": "double",
+             "type": "number"
+           }
+@@ -31685,7 +31757,7 @@
+             "type": "array"
+           },
+           "projectionType": {
+-            "description": "Array of projection types for 360° content (e.g., \"EQUIRECTANGULAR\", \"CUBEFACE\", \"CYLINDRICAL\")",
++            "description": "Array of projection types for 360\u00b0 content (e.g., \"EQUIRECTANGULAR\", \"CUBEFACE\", \"CYLINDRICAL\")",
+             "items": {
+               "nullable": true,
+               "type": "string"
+@@ -33265,4 +33337,4 @@
+       }
+     }
+   }
+-}
+\ No newline at end of file
++}

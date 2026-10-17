@@ -26,7 +26,7 @@ before(async () => {
   base = `http://127.0.0.1:${address.port}`;
 });
 after(async () => {
-  for (const key of ['IMMICH_URL', 'IMMICH_API_KEY', 'IMMICH_SCAN_API_KEY', 'IMMICH_LIBRARY_ID', 'IMMICH_PHOTO_ROOT']) {
+  for (const key of ['IMMICH_URL', 'IMMICH_API_KEY', 'IMMICH_SCAN_API_KEY', 'IMMICH_LIBRARY_ID', 'IMMICH_PHOTO_ROOT', 'IMMICH_SCAN_MODE']) {
     if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
   }
   server.closeAllConnections();
@@ -39,6 +39,7 @@ function configure() {
   process.env.IMMICH_LIBRARY_ID = LIBRARY;
   process.env.IMMICH_PHOTO_ROOT = '/external/shared photos';
   delete process.env.IMMICH_SCAN_API_KEY;
+  delete process.env.IMMICH_SCAN_MODE;
 }
 function photo(relative = 'alice/summer.jpg'): Photo {
   return { id: Buffer.from(relative).toString('base64url'), name: relative.split('/').at(-1)!, folder: 'alice', owner: 'Alice', width: 4, height: 3, bytes: 10, modifiedAt: new Date(0).toISOString(), previewStatus: 'pending' };
@@ -153,8 +154,9 @@ test('queues only the configured library using a separate admin key and throttle
   process.env.IMMICH_SCAN_API_KEY = 'separate-admin-scan-key';
   handler = (req, res) => {
     assert.equal(req.method, 'POST');
-    assert.equal(req.url, `/api/libraries/${LIBRARY}/scan`);
+    assert.equal(req.url, `/api/libraries/${LIBRARY}/scan/path`);
     assert.equal(req.headers['x-api-key'], 'separate-admin-scan-key');
+    assert.deepEqual(requests.at(-1)?.body, { path: '/external/shared photos' });
     res.writeHead(204).end();
   };
   assert.equal((await requestLibraryScan()).state, 'queued');
@@ -178,7 +180,7 @@ test('a queued scan invalidates pending matches so newly indexed photos appear p
   configure();
   let scanned = false;
   handler = (req, res) => {
-    if (req.url?.endsWith('/scan')) { scanned = true; res.writeHead(204).end(); return; }
+    if (req.url?.endsWith('/scan/path')) { scanned = true; res.writeHead(204).end(); return; }
     json(res, scanned ? [asset()] : []);
   };
   assert.equal((await enrichPhotos([photo()])).photos[0].previewStatus, 'pending');
@@ -204,4 +206,29 @@ test('the trailing scan runs after the cooldown to catch files arriving during a
   t.mock.timers.reset();
   await secondScan;
   assert.equal(scanCount, 2);
+});
+
+
+test('an unpatched Immich server never falls back to scanning the whole library', async () => {
+  configure();
+  handler = (_req, res) => res.writeHead(404).end();
+  const result = await requestLibraryScan();
+  assert.equal(result.state, 'unavailable');
+  assert.match(result.message!, /folder-scan API extension/);
+  assert.deepEqual(requests.map(request => request.url), [`/api/libraries/${LIBRARY}/scan/path`]);
+});
+
+
+test('whole-library scans require explicit operator configuration', async () => {
+  configure();
+  process.env.IMMICH_SCAN_MODE = 'library';
+  handler = (req, res, body) => {
+    assert.equal(req.url, `/api/libraries/${LIBRARY}/scan`);
+    assert.deepEqual(body, {});
+    res.writeHead(204).end();
+  };
+  try {
+    assert.equal((await requestLibraryScan()).state, 'queued');
+    assert.equal(requests.length, 1);
+  } finally { delete process.env.IMMICH_SCAN_MODE; }
 });

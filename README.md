@@ -47,7 +47,7 @@ Admin authentication is stored in `DATA_ROOT/admin.sqlite`, with salted scrypt p
 ## Connect Immich
 
 1. Use an existing Immich instance. Mount the shared host folder into its `immich-server` container **read-only**, for example `/srv/gather/photos:/external/gather:ro`.
-2. In Immich, create a **dedicated external library** with import path `/external/gather`. Use the same user's API key for reading the assets in this library. Immich must have filesystem permission to read the originals.
+2. In Immich, use an external library whose import paths contain `/external/gather`. An existing larger library works with folder-scoped scans; a separate library is optional. Use the same user's API key for reading the assets in this library. Immich must have filesystem permission to read the originals.
 3. Set the following in Gather's `.env`, then restart Gather:
 
 ```dotenv
@@ -83,7 +83,7 @@ Friend uploads photos
   → gallery polls and replaces pending cards with previews
 ```
 
-The supported API scans an **entire external library**, not one subfolder. A dedicated library keeps scans focused on this share. Scan requests are combined: the first runs immediately, and uploads within 30 seconds schedule one later scan. The server requests the scan as soon as an upload is saved, independently of the browser connection. There is no preview-generation button. The gallery checks pending previews frequently for the first two minutes, then less often until they are ready, pausing while its tab is hidden. Immich's own scheduled scans are also compatible and can catch up after a server restart or failed scan request.
+By default Gather uses its **folder-scoped Immich API extension** to scan only the selected collection folder. See [installation and API details](integrations/immich/README.md). The standard Immich library scan remains available only when the operator explicitly sets `IMMICH_SCAN_MODE=library`; there is no automatic fallback to a whole-library scan. Scan requests are combined: the first runs immediately, and uploads within 30 seconds schedule one later scan. The server requests the scan as soon as an upload is saved, independently of the browser connection. There is no preview-generation button. The gallery checks pending previews frequently for the first two minutes, then less often until they are ready, pausing while its tab is hidden. Immich's own scheduled scans are also compatible and can catch up after a server restart or failed scan request.
 
 No global job or thumbnail regeneration API is called. Newly imported external assets automatically enter Immich's normal metadata and thumbnail pipeline. Generation is asynchronous; large libraries or busy workers take longer. Missing previews remain clearly marked. An unavailable Immich server does not prevent original uploads or downloads. Existing failed thumbnail jobs should be retried in Immich administration.
 
