@@ -137,7 +137,7 @@ export function validateFilename(name: string) {
 const activeUploads = new Map<string, number>();
 const committingContent = new Map<string, Promise<Photo>>();
 
-async function duplicatePhoto(checksum: string, size: number, signal?: AbortSignal): Promise<Photo | undefined> {
+export async function duplicatePhoto(checksum: string, size: number, signal?: AbortSignal): Promise<Photo | undefined> {
   const candidates = (await scanPhotos([])).filter(photo => photo.bytes === size);
   let found: Photo | undefined;
   await mapConcurrent(candidates, 2, async candidate => {

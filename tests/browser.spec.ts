@@ -350,8 +350,8 @@ test('interrupted uploads retry automatically and a lost success response does n
   });
   await page.locator('input[type="file"]').setInputFiles({ name: 'automatic-retry.png', mimeType: 'image/png', buffer: payload });
   await expect(page.locator('.upload-panel')).toContainText('Retrying automatically');
-  await expect(page.locator('.upload-panel')).toContainText('Saved · Immich preview processing', { timeout: 15_000 });
-  expect(attempts).toBe(3);
+  await expect(page.locator('.upload-panel')).toContainText('Already in collection · skipped', { timeout: 15_000 });
+  expect(attempts).toBe(2);
   expect(new Set(identifiers).size).toBe(1);
   expect((await readdir(path.join(directory, 'photos', 'retry-uploads'))).filter(name => !name.startsWith('.'))).toEqual(['automatic-retry.png']);
   expect((await readFile(path.join(directory, 'photos', 'retry-uploads', 'automatic-retry.png'))).equals(payload)).toBe(true);
@@ -492,14 +492,22 @@ test('new searches abort previous searches instead of leaving them queued', asyn
   } finally { release(); await page.unrouteAll({ behavior: 'wait' }); }
 });
 
-test('uploading an existing file under a new name is visibly skipped', async ({ page }) => {
+test('uploading an existing file under a new name sends only its hash and skips the file transfer', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
   const invitation = auth.createMember('Duplicate uploads', 'duplicate-uploads');
   await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
   await expect(page.locator('.photo-tile').first()).toBeVisible();
   const payload = await readFile(path.join(directory, 'photos', 'host', 'weekend-0.jpg'));
+  let transfers = 0;
+  const checks: unknown[] = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === `${basePath}/api/upload`) transfers++;
+    if (new URL(request.url()).pathname === `${basePath}/api/upload/check`) checks.push(request.postDataJSON());
+  });
   await page.locator('input[type="file"]').setInputFiles({name:'renamed-weekend.jpg',mimeType:'image/jpeg',buffer:payload});
   await expect(page.locator('.upload-panel')).toContainText('Already in collection · skipped');
+  expect(transfers).toBe(0);
+  expect(checks).toEqual([{ checksum: createHash('sha256').update(payload).digest('hex'), size: payload.length }]);
   expect((await readdir(path.join(directory, 'photos', 'duplicate-uploads'))).filter(name=>!name.startsWith('.'))).toEqual([]);
 });
 
@@ -587,4 +595,59 @@ test('failed preview and full-size upgrades keep the cached thumbnail visible',a
   await expect(active).toHaveAttribute('data-resolution','thumbnail');
   await expect.poll(()=>active.evaluate((image:HTMLImageElement)=>image.naturalWidth)).toBeGreaterThan(0);
   await expect(page.locator('.pswp__error-msg')).toHaveCount(0);
+});
+
+
+test('identical queued files transfer once and duplicate checks reject invalid or unauthenticated requests', async ({ page, request }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invitation = auth.createMember('Hash queue', 'hash-queue');
+  const endpoint = `${origin}${basePath}/api/upload/check`;
+  expect((await request.post(endpoint, { headers: { origin }, data: { checksum: 'a'.repeat(64), size: 10 } })).status()).toBe(401);
+  await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
+  await expect(page.locator('.photo-tile').first()).toBeVisible();
+  for (const input of [null, {}, { checksum: '../file', size: 1 }, { checksum: 'a'.repeat(64), size: -1 }, { checksum: 'a'.repeat(64), size: 1e15 }]) {
+    expect((await page.request.post(endpoint, { headers: { origin }, data: JSON.stringify(input) })).status()).toBe(400);
+  }
+  expect((await page.request.post(endpoint, { headers: { origin }, data: 'x'.repeat(1025) })).status()).toBe(413);
+  const payload = await sharp({ create: { width: 31, height: 29, channels: 3, background: '#123789' } }).png().toBuffer();
+  let transfers = 0;
+  page.on('request', request => { if (new URL(request.url()).pathname === `${basePath}/api/upload`) transfers++; });
+  await page.locator('input[type="file"]').setInputFiles([
+    { name: 'first.png', mimeType: 'image/png', buffer: payload },
+    { name: 'same-but-renamed.png', mimeType: 'image/png', buffer: payload }
+  ]);
+  await expect(page.locator('.upload-panel')).toContainText('2 of 2 finished · 1 skipped');
+  expect(transfers).toBe(1);
+  expect((await readdir(path.join(directory, 'photos', 'hash-queue'))).filter(name => !name.startsWith('.'))).toHaveLength(1);
+});
+
+test('duplicate checks retry before sending any file and can be cancelled', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invitation = auth.createMember('Hash retry', 'hash-retry');
+  await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
+  await expect(page.locator('.photo-tile').first()).toBeVisible();
+  let checks = 0, transfers = 0;
+  page.on('request', request => { if (new URL(request.url()).pathname === `${basePath}/api/upload`) transfers++; });
+  await page.route('**/api/upload/check', async route => {
+    checks++;
+    if (checks === 1) await route.abort();
+    else await route.continue();
+  });
+  const payload = await readFile(path.join(directory, 'photos', 'host', 'weekend-0.jpg'));
+  await page.locator('input[type="file"]').setInputFiles({ name: 'hash-retry.jpg', mimeType: 'image/jpeg', buffer: payload });
+  await expect(page.locator('.upload-panel')).toContainText('Duplicate check interrupted. Retrying automatically');
+  await expect(page.locator('.upload-panel')).toContainText('Already in collection · skipped');
+  expect(checks).toBe(2);
+  expect(transfers).toBe(0);
+  await page.unroute('**/api/upload/check');
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/upload/check', async route => { await gate; await route.fulfill({ json: { duplicate: false } }).catch(() => {}); });
+  try {
+    await page.locator('input[type="file"]').setInputFiles({ name: 'cancel-check.jpg', mimeType: 'image/jpeg', buffer: payload });
+    await expect(page.locator('.upload-panel')).toContainText('Checking for duplicates');
+    await page.getByRole('button', { name: 'Cancel cancel-check.jpg', exact: true }).click();
+    await expect(page.locator('.upload-panel')).toContainText('Cancelled');
+  } finally { release(); await page.unrouteAll({ behavior: 'wait' }); }
+  expect(transfers).toBe(0);
 });
