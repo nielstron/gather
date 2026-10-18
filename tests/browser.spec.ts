@@ -908,7 +908,8 @@ test('imports a Google Photos link through the UI, continues after Back, and ski
   expect((await request.get(`${origin}${basePath}/api/import`)).status()).toBe(401);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${origin}${basePath}/`);
-  await page.getByRole('button', { name: 'Import from link', exact: true }).click();
+  await page.getByRole('button', { name: 'Upload photos', exact: true }).click();
+    await page.getByRole('button', { name: /Import from link/ }).click();
   const dialog = page.getByRole('dialog', { name: 'Import from link', exact: true });
   await page.getByLabel('Shared album link', { exact: true }).fill('https://127.0.0.1/private');
   await page.getByRole('button', { name: 'Preview album', exact: true }).click();
@@ -932,7 +933,8 @@ test('imports a Google Photos link through the UI, continues after Back, and ski
     release(); importGate = undefined;
     await expect.poll(async () => (await readdir(path.join(directory, 'photos', invite.member.folder))).length).toBe(1);
     expect((await readFile(path.join(directory, 'photos', invite.member.folder, 'imported-from-link.png'))).equals(importImage)).toBe(true);
-    await page.getByRole('button', { name: 'Import from link', exact: true }).click();
+    await page.getByRole('button', { name: 'Upload photos', exact: true }).click();
+    await page.getByRole('button', { name: /Import from link/ }).click();
     await expect(dialog).toContainText('Import complete');
     await expect(dialog).toContainText('1 imported · 1 duplicates skipped');
     const jobs = (await (await page.request.get(`${origin}${basePath}/api/import`)).json()).jobs;
@@ -1051,6 +1053,43 @@ test('Back closes previews and every modal, and ordinary closes preserve page na
   await settled();
   await page.goBack();
   await expect(page).toHaveURL(previous);
+});
+
+test('download options default to other contributors and remember completed downloads', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const self = auth.createMember('Download self', 'download-self');
+  auth.createMember('Download source', 'download-source');
+  const session = auth.exchangeInvite(self.token)!;
+  await page.context().addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
+  for (const folder of ['download-self', 'download-source']) await writeFile(path.join(directory, 'photos', folder, 'download.png'), importImage);
+  await indexFiles();
+  await page.request.get(`${origin}${basePath}/api/photos?refresh=1`);
+  await page.goto(`${origin}${basePath}/`);
+  await page.getByRole('button', { name: 'Download photos', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Download photos', exact: true });
+  await expect(dialog.getByRole('checkbox', { name: 'Download self (you)', exact: true })).not.toBeChecked();
+  await expect(dialog.getByRole('checkbox', { name: 'Download source', exact: true })).toBeChecked();
+  await dialog.getByRole('button', { name: 'Deselect all contributors' }).click();
+  await dialog.getByRole('checkbox', { name: 'Download source', exact: true }).check();
+  const downloading = page.waitForEvent('download', { timeout: 10_000 });
+  await dialog.getByRole('button', { name: 'Download', exact: true }).click();
+  const download = await downloading;
+  const archive = await readFile((await download.path())!);
+  expect(archive.includes(Buffer.from('download-source/download.png'))).toBe(true);
+  expect(archive.includes(Buffer.from('download-self/download.png'))).toBe(false);
+  await dialog.getByRole('button', { name: 'Close download options' }).click();
+  await page.getByRole('button', { name: 'Download photos', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Deselect all contributors' }).click();
+  await dialog.getByRole('checkbox', { name: 'Download source', exact: true }).check();
+  await dialog.getByRole('checkbox', { name: 'Only updates since last download' }).check();
+  await expect(dialog.getByRole('button', { name: 'Download', exact: true })).toBeDisabled();
+  const url = page.url(); await page.goBack(); await expect(dialog).not.toBeVisible(); expect(page.url()).toBe(url);
+  await page.getByRole('button', { name: 'Upload photos', exact: true }).click();
+  const upload = page.getByRole('dialog', { name: 'Upload photos', exact: true });
+  await expect(upload.getByRole('button', { name: /Import from link/ })).toBeVisible();
+  const choosing = page.waitForEvent('filechooser');
+  await upload.getByRole('button', { name: /Upload from storage/ }).click();
+  await choosing; await expect(upload).not.toBeVisible();
 });
 
 test('one admin creates and switches collections while guest access, files, and invitations stay isolated', async ({ page, browser, request }) => {

@@ -1,3 +1,4 @@
+import { recordDownloadedPhotos } from '$lib/server/auth';
 import { Readable } from 'node:stream';
 import path from 'node:path';
 import { openPhoto, previewPath, contentDisposition, MediaError } from '$lib/server/media';
@@ -10,7 +11,7 @@ const browserImages: Record<string, string> = {
   '.webp': 'image/webp', '.avif': 'image/avif', '.gif': 'image/gif',
 };
 
-export const GET: RequestHandler = async ({ params, url, request }) => {
+export const GET: RequestHandler = async ({ params, url, request, locals }) => {
   try {
     const kind = url.searchParams.get('kind') || 'thumbnail';
     if (!['thumbnail', 'preview', 'fullsize', 'original'].includes(kind)) throw new MediaError(400, 'Unknown image size');
@@ -21,7 +22,12 @@ export const GET: RequestHandler = async ({ params, url, request }) => {
       if (kind === 'original' || contentType) {
         // A full-resolution display uses the same validated original as downloads,
         // without needing Immich's asset.download permission or buffering the file.
-        return new Response(Readable.toWeb(file.handle.createReadStream()) as ReadableStream, { headers: {
+        const source = file.handle.createReadStream();
+        if (kind === 'original' && locals?.user) source.once('end', () => {
+          try { recordDownloadedPhotos(locals.user!, [{ id: params.id, revision: file.revision }]); }
+          catch { console.warn('Gather: could not save download history.'); }
+        });
+        return new Response(Readable.toWeb(source) as ReadableStream, { headers: {
           'Content-Type': kind === 'original' ? 'application/octet-stream' : contentType,
           'Content-Length': String(file.bytes),
           ...(kind === 'original' ? { 'Content-Disposition': contentDisposition(path.basename(file.relative)) } : {}),

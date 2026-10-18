@@ -16,6 +16,7 @@
   import { installProgressiveImages } from '$lib/progressive-viewer';
   import SortPicker from '$lib/components/SortPicker.svelte';
   import SearchFilters from '$lib/components/SearchFilters.svelte';
+  import DownloadPhotos from '$lib/components/DownloadPhotos.svelte';
   import ImportPhotos from '$lib/components/ImportPhotos.svelte';
   import type { CollectionSearch } from '$lib/search';
   import Thumbnail from '$lib/components/Thumbnail.svelte';
@@ -70,6 +71,8 @@
   let profileDialog: HTMLDialogElement;
   let previewService = data.immichConfigured ? 'ready' : 'unconfigured';
   let input: HTMLInputElement;
+  let uploadOptions: ImportPhotos;
+  let downloadOptions: DownloadPhotos;
   let uploads: Upload[] = [];
   let uploadPanelOpen = true;
   let uploadPanelHeight = 0;
@@ -667,8 +670,7 @@
         <button class="identity-button mobile-identity" on:click={openProfile} aria-label={`Change name for ${data.user.name}`} aria-haspopup="dialog" title={`Change name: ${data.user.name}`}><span class="identity-icon"><Icon name="user" size={22} /></span><span class="identity-name">{data.user.name}</span></button>
         <div class="breadcrumb"><Icon name="folder" size={16} /><span>{data.collectionName}</span><Icon name="chevron" size={13} /><strong>{pageTitle}</strong></div>
         <label class="search-input"><Icon name="search" size={18} /><input type="search" aria-label="Search photos" bind:this={searchInput} on:focus={() => searchActive = true} on:click={() => searchActive = true} aria-controls="search-controls" placeholder="Describe a scene, place, or moment…" bind:value={query} on:input={search} /><span class="search-hint">{searchOptions.mode === 'semantic' ? 'by meaning' : searchOptions.mode === 'filename' ? 'by filename' : 'descriptions'}</span></label>
-        <ImportPhotos {base} name={data.user.name} collectionName={data.collectionName} on:changed={() => void loadPhotos()} />
-        <Button class="primary-button top-upload" onclick={() => input.click()}><Icon name="upload" size={17} /><span>Upload photos</span></Button>
+        <ImportPhotos {base} name={data.user.name} collectionName={data.collectionName} bind:this={uploadOptions} on:choose={() => input.click()} on:changed={() => void loadPhotos()} />
       </header>
       <div id="search-controls" class="search-controls" class:visible={searchActive} bind:this={searchControls}>
         <SearchFilters {query} visible={searchActive} bind:this={searchFilters} bind:value={searchOptions} on:apply={(event) => { searchOptions = event.detail; selected = new Set(); photos = []; sort = 'relevance'; sortDirection = searchOptions.orderBy?.direction || 'desc'; void loadPhotos(); }} />
@@ -686,6 +688,7 @@
               <select id="folder-filter" value={folder} aria-describedby="photo-count" on:change={(event) => navigate(event.currentTarget.value)}><option value="">All photos</option>{#each data.members as member}<option value={member.folder}>{member.name}{member.id === data.user.id ? ' (you)' : ''}</option>{/each}</select>
             </div>
             <div class="collection-actions">
+              <button class="icon-button" on:click={() => downloadOptions.open()} aria-label="Download photos" title="Download photos"><Icon name="download" size={20} /></button>
               {#if photos.length}<button class="icon-button select-all" class:active={allSelected} on:click={() => { selected = allSelected ? new Set() : new Set(photos.slice(0, 200).map((photo) => photo.id)); }} aria-label={selectionAction} title={selectionAction} aria-pressed={allSelected}><Icon name="select-all" size={20} /></button>{/if}
               <SortPicker field={sortChoice.split(':')[0]} direction={sortDirection} label={sortLabel} relevanceLabel={searchOptions.orderBy ? 'Search order' : semanticQuery ? 'Relevance' : ''} on:change={(event) => { sort = event.detail.field; sortDirection = event.detail.direction; changeSort(); }} />
               <button class="icon-button" on:click={() => loadPhotos()} disabled={loading} aria-label="Refresh photos" title="Refresh photos">{#if loading}<span class="small-spinner" aria-hidden="true"></span>{:else}<Icon name="refresh" size={18} />{/if}</button>
@@ -695,7 +698,7 @@
         {#if searchTruncated}<p class="search-limit-notice">Showing the best {total} semantic matches. Add filters to narrow the results.</p>{/if}
         {#if previewService !== 'ready'}<div class="service-notice"><Icon name="info" size={19} /><div><strong>{previewService === 'unconfigured' ? 'Connect Immich to bring your gallery to life' : 'Immich previews are temporarily unavailable'}</strong><p>{previewService === 'unconfigured' ? 'Your host needs to connect an Immich external library. You can already upload photos and download originals.' : 'Your photos are safely stored. You can keep uploading and downloading originals while Immich reconnects.'}</p></div><button class="text-button" on:click={() => loadPhotos()}>Refresh</button></div>{/if}
         {#if error}<div class="error-notice" role="alert"><Icon name="info" size={18} /><span>{error}</span><button class="text-button" on:click={() => loadPhotos()}>Try again</button></div>{/if}
-        {#if selected.size}<div class="selection-bar"><button class="icon-button" on:click={() => { selected = new Set(); }} aria-label="Clear selection"><Icon name="close" size={18} /></button><strong>{selected.size} selected</strong><form method="POST" action={`${base}/api/download`}><input type="hidden" name="ids" value={JSON.stringify([...selected])} /><Button type="submit" class="primary-button"><Icon name="download" size={17} />Download originals</Button></form></div>{/if}
+        {#if selected.size}<div class="selection-bar"><button class="icon-button" on:click={() => { selected = new Set(); }} aria-label="Clear selection"><Icon name="close" size={18} /></button><strong>{selected.size} selected</strong><Button class="primary-button" onclick={() => downloadOptions.open([...selected])}><Icon name="download" size={17} />Download originals</Button></div>{/if}
         <div class="photo-timeline" class:selecting={selected.size > 0} bind:clientWidth={galleryWidth}>
           {#each timelineGroups as group (group.key)}
           <section class="timeline-group" aria-label={group.label || 'Photos by filename'}>
@@ -715,12 +718,13 @@
             </div>
           </section>
           {/each}
-          {#if !photos.length && !loading}<div class="empty-state"><div class="empty-illustration"><span class="empty-photo"><Icon name="image" size={39} /></span><span class="empty-plus">+</span></div><Badge size="small" color="secondary">{hasSearch ? 'Nothing here yet' : 'Room for every moment'}</Badge><h2>{hasSearch ? 'No matching photos' : folder && folder !== data.user.folder ? 'Their story starts here' : 'The best memories are shared'}</h2><p>{hasSearch ? 'Try another description, adjust the filters, or explore a different folder.' : folder && folder !== data.user.folder ? `${currentOwner?.name || 'This person'} hasn’t shared any photos yet. Check back soon.` : 'Add your first photos and give everyone a new perspective. Your originals stay right here, on your server.'}</p>{#if hasSearch}<Button class="primary-button" onclick={() => { query = ''; searchFilters.reset(); }}>Clear search</Button>{:else}<Button class="primary-button" onclick={() => input.click()}><Icon name="upload" size={18} />Upload your photos</Button><span class="empty-drop-hint">or drop them anywhere on this page</span>{/if}</div>{:else if !photos.length && loading}<div class="loading-state"><span class="large-spinner"></span><p>Gathering your photos…</p></div>{/if}
+          {#if !photos.length && !loading}<div class="empty-state"><div class="empty-illustration"><span class="empty-photo"><Icon name="image" size={39} /></span><span class="empty-plus">+</span></div><Badge size="small" color="secondary">{hasSearch ? 'Nothing here yet' : 'Room for every moment'}</Badge><h2>{hasSearch ? 'No matching photos' : folder && folder !== data.user.folder ? 'Their story starts here' : 'The best memories are shared'}</h2><p>{hasSearch ? 'Try another description, adjust the filters, or explore a different folder.' : folder && folder !== data.user.folder ? `${currentOwner?.name || 'This person'} hasn’t shared any photos yet. Check back soon.` : 'Add your first photos and give everyone a new perspective. Your originals stay right here, on your server.'}</p>{#if hasSearch}<Button class="primary-button" onclick={() => { query = ''; searchFilters.reset(); }}>Clear search</Button>{:else}<Button class="primary-button" onclick={() => uploadOptions.open()}><Icon name="upload" size={18} />Upload your photos</Button><span class="empty-drop-hint">or drop them anywhere on this page</span>{/if}</div>{:else if !photos.length && loading}<div class="loading-state"><span class="large-spinner"></span><p>Gathering your photos…</p></div>{/if}
         </div>
         {#if hasMore}<div class="load-more"><Button variant="outline" onclick={() => loadPhotos(true)} loading={loading}>Load more photos</Button><span>Showing {photos.length} of {total}</span></div>{/if}
       </section>
     </main>
   </div>
+  <DownloadPhotos {base} selfFolder={data.user.folder} bind:this={downloadOptions} />
   <input class="sr-only" bind:this={input} type="file" multiple accept="image/*,.heic,.heif,.avif,.tif,.tiff" aria-label="Choose photos to upload" on:change={(event) => { if (event.currentTarget.files) addUploads(event.currentTarget.files); event.currentTarget.value = ''; }} />
   <dialog use:modalHistory class="profile-dialog" bind:this={profileDialog} aria-labelledby="profile-heading">
     <button class="icon-button dialog-close" on:click={() => profileDialog.close()} aria-label="Close name settings" disabled={savingProfile}><Icon name="close" /></button>

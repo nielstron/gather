@@ -6,8 +6,9 @@
   export let base: string;
   export let name: string;
   export let collectionName: string;
-  const dispatch = createEventDispatcher<{ changed: void }>();
+  const dispatch = createEventDispatcher<{ changed: void; choose: void }>();
   let dialog: HTMLDialogElement;
+  let view: 'choice' | 'import' = 'choice';
   let link = '', error = '', busy = false, selected = '';
   let jobs: ImportSummary[] = [];
   let timer: ReturnType<typeof setTimeout>;
@@ -53,7 +54,8 @@
     } catch (cause) { if (!disposed) error = cause instanceof Error && cause.name !== 'TimeoutError' ? cause.message : 'The request timed out. Try again; any started import continues on the server.'; }
     finally { busy = false; schedule(); }
   }
-  function open() { dialog.showModal(); error = ''; void poll(); }
+  export function open() { view = 'choice'; dialog.showModal(); error = ''; void poll(); }
+  function chooseStorage() { dialog.close(); dispatch('choose'); }
   onMount(() => {
     void poll();
     return () => { disposed = true; controller.abort(); clearTimeout(timer); };
@@ -62,12 +64,16 @@
 
 <svelte:window on:online={() => void poll()} />
 <div class="import-control">
-  <button class="import-trigger" on:click={open} aria-label="Import from link" aria-haspopup="dialog" title={active ? `Importing ${active.processed} of ${active.total}` : 'Import from link'}>
-    {#if active}<span class="small-spinner" aria-hidden="true"></span>{:else}<Icon name="download" size={19} />{/if}
-    <span>{active ? `${active.processed}/${active.total}` : 'Import from link'}</span>
-  </button>
+  <button class="primary-button top-upload upload-trigger" on:click={open} aria-label="Upload photos" aria-haspopup="dialog"><Icon name="upload" size={18} /><span>Upload photos</span>{#if active}<span class="small-spinner" aria-label="Import in progress"></span>{/if}</button>
   <dialog use:modalHistory class="import-dialog" bind:this={dialog} on:close={schedule} aria-labelledby="import-heading">
-    <header><div><h2 id="import-heading">Import from link</h2><p>Bring a shared album into your collection.</p></div><button class="icon-button" on:click={() => dialog.close()} aria-label="Close import"><Icon name="close" /></button></header>
+    <header><div><h2 id="import-heading">{view === 'import' ? 'Import from link' : 'Upload photos'}</h2><p>{view === 'import' ? 'Bring a shared album into your collection.' : 'Choose how to add photos.'}</p></div><button class="icon-button" on:click={() => dialog.close()} aria-label={view === 'import' ? 'Close import' : 'Close upload options'}><Icon name="close" /></button></header>
+    {#if view === 'choice'}
+      <div class="upload-choices">
+        <button class="upload-choice" on:click={chooseStorage}><Icon name="folder" size={26} /><span><strong>Upload from storage</strong><small>Choose photos from your device.</small></span><Icon name="chevron" size={18} /></button>
+        <button class="upload-choice" on:click={() => view = 'import'}><Icon name="download" size={26} /><span><strong>Import from link</strong><small>{active ? `Importing ${active.processed} of ${active.total} photos` : 'Bring in a shared Google Photos album.'}</small></span><Icon name="chevron" size={18} /></button>
+      </div>
+    {:else}
+    <button class="text-button import-back" on:click={() => view = 'choice'}><Icon name="chevron" size={15} />Back to upload options</button>
     <form on:submit|preventDefault={() => action('preview')}>
       <label for="import-album-link">Shared album link</label>
       <div class="import-input"><input id="import-album-link" type="url" placeholder="https://photos.app.goo.gl/…" bind:value={link} required disabled={busy} /><button type="submit" class="primary-button" disabled={busy || !link.trim()}>{#if busy}<span class="small-spinner" aria-hidden="true"></span>{/if}Preview album</button></div>
@@ -97,9 +103,11 @@
     {#if jobs.filter(item => item.id !== selected && item.status !== 'ready').length}
       <section class="recent-imports" aria-label="Recent imports"><h3>Recent imports</h3>{#each jobs.filter(item => item.id !== selected && item.status !== 'ready').slice(0, 5) as previous}<button on:click={() => selected = previous.id}><span>{previous.title}</span><small>{labels[previous.status]} · {previous.processed}/{previous.total}</small><Icon name="chevron" size={17} /></button>{/each}</section>
     {/if}
+    {/if}
   </dialog>
 </div>
 
 <style>
-  .import-control{flex-shrink:0}.import-trigger{display:flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--border);border-radius:8px;min-height:42px;padding:10px 12px;font-size:13px;color:#6258a5;background:white}.import-trigger:hover{background:#f5f3fb}.import-dialog{position:fixed;inset:0;margin:auto;width:min(600px,calc(100% - 32px));height:fit-content;max-height:calc(100dvh - 32px);overflow:auto;padding:24px;border:1px solid var(--border);border-radius:16px;color:var(--text,#393641);box-shadow:0 20px 80px #22183d33}.import-dialog[open]{display:grid;gap:22px}.import-dialog::backdrop{background:#22142e70;backdrop-filter:blur(4px)}header{display:flex;justify-content:space-between;gap:12px;align-items:start}h2{font-size:22px;line-height:1.3}header p,.import-help{overflow-wrap:anywhere;font-size:12px;color:#797184;line-height:1.6;margin-top:7px}form>label{display:block;font-size:13px;font-weight:550;margin-bottom:8px}.import-input{display:flex;gap:8px;align-items:stretch}.import-input input{flex:1;min-width:0;border:1px solid #ded8e9;border-radius:8px;padding:10px 12px;font-size:14px}.import-job{display:grid;gap:12px;background:#faf9fd;border:1px solid var(--border);padding:18px;border-radius:12px}.job-heading{display:flex;gap:10px;align-items:start}.job-heading :global(svg){color:var(--accent);margin-top:2px}h3{font-size:15px;line-height:1.4;overflow-wrap:anywhere}.job-heading p,.job-counts,.job-file{font-size:12px;color:#797184;line-height:1.5}.job-heading p{margin-top:4px}.job-status{font-size:13px;color:#61547d}progress{width:100%;height:8px;accent-color:var(--accent)}.job-file{overflow-wrap:anywhere}.import-error,.job-file.error{font-size:12px;line-height:1.6;color:#a0525e;overflow-wrap:anywhere}.job-actions{display:flex;align-items:center;gap:10px}.recent-imports{display:grid;gap:8px}.recent-imports button{display:flex;text-align:left;align-items:center;gap:8px;padding:10px;border:1px solid var(--border);border-radius:8px;font-size:12px}.recent-imports button>span{flex:1;overflow-wrap:anywhere}.recent-imports small{color:#797184;font-size:11px}@media(max-width:650px){.import-trigger{width:42px;padding:8px}.import-trigger>span:not(.small-spinner){display:none}.import-dialog{padding:18px}.import-input{flex-direction:column}.import-input input{font-size:16px}.recent-imports button{flex-wrap:wrap}.recent-imports small{flex-basis:100%}}
+  .upload-trigger{display:flex;align-items:center;gap:8px}.upload-choices{display:grid;gap:12px}.upload-choice{display:flex;align-items:center;gap:14px;padding:18px;border:1px solid var(--border);border-radius:12px;background:#faf9fd;text-align:left}.upload-choice>span{display:grid;gap:6px;flex:1}.upload-choice strong{font-size:14px}.upload-choice small{font-size:12px;color:#797184}.upload-choice:hover{border-color:var(--accent);background:#f3efff}.import-back{display:flex;align-items:center;gap:4px;font-size:12px;justify-self:start}.import-back :global(svg){transform:rotate(180deg)}
+  .import-control{flex-shrink:0}.import-dialog{position:fixed;inset:0;margin:auto;width:min(600px,calc(100% - 32px));height:fit-content;max-height:calc(100dvh - 32px);overflow:auto;padding:24px;border:1px solid var(--border);border-radius:16px;color:var(--text,#393641);box-shadow:0 20px 80px #22183d33}.import-dialog[open]{display:grid;gap:22px}.import-dialog::backdrop{background:#22142e70;backdrop-filter:blur(4px)}header{display:flex;justify-content:space-between;gap:12px;align-items:start}h2{font-size:22px;line-height:1.3}header p,.import-help{overflow-wrap:anywhere;font-size:12px;color:#797184;line-height:1.6;margin-top:7px}form>label{display:block;font-size:13px;font-weight:550;margin-bottom:8px}.import-input{display:flex;gap:8px;align-items:stretch}.import-input input{flex:1;min-width:0;border:1px solid #ded8e9;border-radius:8px;padding:10px 12px;font-size:14px}.import-job{display:grid;gap:12px;background:#faf9fd;border:1px solid var(--border);padding:18px;border-radius:12px}.job-heading{display:flex;gap:10px;align-items:start}.job-heading :global(svg){color:var(--accent);margin-top:2px}h3{font-size:15px;line-height:1.4;overflow-wrap:anywhere}.job-heading p,.job-counts,.job-file{font-size:12px;color:#797184;line-height:1.5}.job-heading p{margin-top:4px}.job-status{font-size:13px;color:#61547d}progress{width:100%;height:8px;accent-color:var(--accent)}.job-file{overflow-wrap:anywhere}.import-error,.job-file.error{font-size:12px;line-height:1.6;color:#a0525e;overflow-wrap:anywhere}.job-actions{display:flex;align-items:center;gap:10px}.recent-imports{display:grid;gap:8px}.recent-imports button{display:flex;text-align:left;align-items:center;gap:8px;padding:10px;border:1px solid var(--border);border-radius:8px;font-size:12px}.recent-imports button>span{flex:1;overflow-wrap:anywhere}.recent-imports small{color:#797184;font-size:11px}@media(max-width:650px){.import-dialog{padding:18px}.import-input{flex-direction:column}.import-input input{font-size:16px}.recent-imports button{flex-wrap:wrap}.recent-imports small{flex-basis:100%}}
 </style>

@@ -68,7 +68,11 @@ async function checkedDirectory(parts: string[]) {
   return current;
 }
 
-export async function openPhoto(id: string): Promise<{ handle: FileHandle; relative: string; bytes: number; modifiedAt: Date }> {
+function photoRevision(relative: string, stat: { size: number; mtimeMs: number; ctimeMs: number }) {
+  return createHash('sha256').update(JSON.stringify([config.photoRoot, relative, stat.size, stat.mtimeMs, stat.ctimeMs])).digest('base64url').slice(0, 20);
+}
+
+export async function openPhoto(id: string): Promise<{ handle: FileHandle; relative: string; bytes: number; modifiedAt: Date; revision: string }> {
   const relative = decodeId(id);
   try {
     const parts = relative.split('/');
@@ -76,7 +80,7 @@ export async function openPhoto(id: string): Promise<{ handle: FileHandle; relat
     const handle = await open(path.join(config.photoRoot, relative), constants.O_RDONLY | constants.O_NOFOLLOW);
     const stat = await handle.stat();
     if (!stat.isFile()) { await handle.close(); throw new MediaError(404, 'Photo not found'); }
-    return { handle, relative, bytes: stat.size, modifiedAt: stat.mtime };
+    return { handle, relative, bytes: stat.size, modifiedAt: stat.mtime, revision: photoRevision(relative, stat) };
   } catch (error) {
     if (error instanceof MediaError) throw error;
     throw new MediaError(404, 'Photo not found');
@@ -88,7 +92,7 @@ async function photoInfo(relative: string, members: Member[], dimensions = { wid
   if (!stat.isFile() || stat.isSymbolicLink()) return null;
   // Listings never read original bytes: mounted/network libraries can be slow.
   // Immich supplies actual dimensions when enriching the visible gallery page.
-  const revision = createHash('sha256').update(JSON.stringify([config.photoRoot, relative, stat.size, stat.mtimeMs, stat.ctimeMs])).digest('base64url').slice(0, 20);
+  const revision = photoRevision(relative, stat);
   const folder = relative.includes('/') ? relative.split('/')[0] : '';
   return { id: encodeId(relative), revision, name: path.basename(relative), folder, owner: members.find((member) => member.folder === folder)?.name || folder || 'Shared folder', width: dimensions.width, height: dimensions.height, bytes: stat.size, modifiedAt: stat.mtime.toISOString(), previewStatus: 'pending' };
 }

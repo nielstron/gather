@@ -4,6 +4,10 @@ A small self-hosted photo exchange for friends. Create a collection for each tri
 
 The interface uses SvelteKit, Immich UI, and a timeline of justified photo tiles with 2-pixel gaps and compact day labels. Portraits and panoramas keep their aspect ratios, and PhotoSwipe opens the larger preview. “Recently added” groups photos by their filesystem modification date in the viewer's local timezone; “Filename A–Z” shows one continuous grid. This is a working prototype intended for one Node process and small trusted groups.
 
+The gallery’s Download button opens contributor checkboxes, with your own folder deselected by default. Enable **Only updates since last download** to include previously undownloaded photos and changed originals. Download history is saved per member and collection after an archive finishes streaming; downloading one contributor does not mark other contributors’ photos as downloaded. Individual original downloads also count, while opening or zooming a photo does not. Starting a download cannot confirm that the browser ultimately saved it to disk.
+
+**Upload photos** opens a choice between **Upload from storage** and **Import from link**. Link imports use the same existing Google Photos import preview and progress interface.
+
 Browser Back and phone back gestures close the current photo preview or modal before leaving the gallery. Nested dialogs close one at a time. Close buttons, Escape, and saving name settings also consume the modal history entry.
 
 ## Start locally

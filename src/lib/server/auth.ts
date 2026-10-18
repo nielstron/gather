@@ -50,6 +50,19 @@ function db() {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS upload_receipts_created ON upload_receipts(created_at);
+    CREATE TABLE IF NOT EXISTS download_tickets (
+      token_hash TEXT PRIMARY KEY,
+      scope TEXT NOT NULL,
+      choice TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS download_history (
+      scope TEXT NOT NULL,
+      photo_id TEXT NOT NULL,
+      revision TEXT NOT NULL,
+      downloaded_at INTEGER NOT NULL,
+      PRIMARY KEY (scope, photo_id)
+    );
     CREATE TABLE IF NOT EXISTS shared_link (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       token_hash TEXT,
@@ -300,4 +313,30 @@ export function readFileChecksum(relative: string, revision: string): string | n
 export function writeFileChecksum(relative: string, revision: string, checksum: string) {
   const scope = hash(JSON.stringify([config.photoRoot, relative]));
   db().prepare('INSERT OR REPLACE INTO file_checksums (scope, revision, checksum) VALUES (?, ?, ?)').run(scope, revision, checksum);
+}
+
+
+/** Per-member, per-folder versions; a partial download never advances other files. */
+export function downloadedPhotos(member: Member): Map<string, string> {
+  const rows = db().prepare('SELECT photo_id, revision FROM download_history WHERE scope = ?').all(uploadScope(member, 'downloads')) as { photo_id: string; revision: string }[];
+  return new Map(rows.map(row => [row.photo_id, row.revision]));
+}
+export function recordDownloadedPhotos(member: Member, photos: { id: string; revision?: string }[]) {
+  const statement = db().prepare('INSERT OR REPLACE INTO download_history (scope, photo_id, revision, downloaded_at) VALUES (?, ?, ?, ?)');
+  const scope = uploadScope(member, 'downloads');
+  db().transaction(() => { for (const photo of photos) if (photo.revision) statement.run(scope, photo.id, photo.revision, Date.now()); })();
+}
+
+/** Short-lived, single-use recipes keep archive URLs small and scoped to a session member. */
+export function createDownloadTicket(member: Member, choice: unknown): string {
+  const token = randomBytes(32).toString('base64url');
+  const database = db();
+  database.prepare('DELETE FROM download_tickets WHERE expires_at < ?').run(Date.now());
+  database.prepare('INSERT INTO download_tickets VALUES (?, ?, ?, ?)').run(hash(token), uploadScope(member, 'downloads'), JSON.stringify(choice), Date.now() + 10 * 60_000);
+  return token;
+}
+export function takeDownloadTicket(member: Member, token: string): unknown {
+  if (!tokenPattern.test(token)) return;
+  const row = db().prepare('DELETE FROM download_tickets WHERE token_hash = ? AND scope = ? AND expires_at > ? RETURNING choice').get(hash(token), uploadScope(member, 'downloads'), Date.now()) as { choice: string } | undefined;
+  return row ? JSON.parse(row.choice) : undefined;
 }
