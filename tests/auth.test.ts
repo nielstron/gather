@@ -97,22 +97,23 @@ test('reusable invitations retain only a bounded number of sessions', () => {
   assert.equal(auth.getSession(newest.sessionToken)?.folder, 'drew');
 });
 
-test('a shared link stores only its hash and same-name visitors get separate folders', () => {
+test('a shared link stores only its hash and same-name visitors reuse their identity and claim existing folders', () => {
   const token = auth.createShareLink();
   assert.equal(token.length, 43);
   assert.throws(() => auth.createShareLink(), /already exists/);
   const first = auth.joinCollection(token, 'Alex');
-  const second = auth.joinCollection(token, 'Alex');
+  const second = auth.joinCollection(token, '  aLeX  ');
   assert.equal(first.member.name, second.member.name);
-  assert.notEqual(first.member.id, second.member.id);
-  assert.notEqual(first.member.folder, second.member.folder);
+  assert.equal(first.member.id, second.member.id);
+  assert.equal(first.member.folder, second.member.folder);
   assert.deepEqual(auth.getSession(first.sessionToken), first.member);
   assert.deepEqual(auth.getSession(second.sessionToken), second.member);
   const collision = auth.joinCollection(token, 'Alice');
-  assert.notEqual(collision.member.folder, 'alice');
+  assert.equal(collision.member.folder, 'alice');
   mkdirSync(path.join(directory, 'photos', 'existing'));
   writeFileSync(path.join(directory, 'photos', 'existing', 'keep.txt'), 'existing files');
-  assert.notEqual(auth.joinCollection(token, 'Existing').member.folder, 'existing');
+  assert.equal(auth.joinCollection(token, 'Existing').member.folder, 'existing');
+  assert.equal(readFileSync(path.join(directory, 'photos/existing/keep.txt'), 'utf8'), 'existing files');
   const unicode = auth.joinCollection(token, '日本語');
   assert.match(unicode.member.folder, /^[a-z0-9-]+$/);
   const db = new Database(path.join(directory, 'data/auth.sqlite'), { readonly: true });
@@ -226,11 +227,11 @@ test('ambiguous existing folders are never silently merged or claimed', () => {
 });
 
 
-test('shared-link joins avoid existing folders regardless of capitalization', () => {
+test('shared-link joins claim existing folders regardless of capitalization', () => {
   mkdirSync(path.join(directory, 'photos', 'UppercaseGuest'));
   const token = auth.createShareLink();
   const joined = auth.joinCollection(token, 'UppercaseGuest');
-  assert.notEqual(joined.member.folder.toLowerCase(), 'uppercaseguest');
+  assert.equal(joined.member.folder, 'UppercaseGuest');
 });
 
 test('upload receipts survive a database reopen, reject mismatches, and are scoped to owner and collection', async () => {
@@ -250,4 +251,24 @@ test('upload receipts survive a database reopen, reject mismatches, and are scop
   const snapshot = new Database(path.join(directory, 'data/auth.sqlite'), { readonly: true });
   try { assert.equal(JSON.parse((snapshot.prepare('SELECT photo FROM upload_receipts WHERE scope = ?').get(scope) as { photo: string }).photo).id, photo.id); }
   finally { snapshot.close(); }
+});
+
+test('duplicate names cannot be introduced by admin creation or renaming', () => {
+  const member = auth.createMember('Unique person', 'unique-person').member;
+  assert.throws(() => auth.createMember(' UNIQUE PERSON ', 'other-unique-folder'), /already belongs/);
+  const other = auth.createMember('Other unique', 'other-unique').member;
+  assert.throws(() => auth.renameMember(other.id, 'unique PERSON'), /already belongs/);
+  assert.equal(auth.renameMember(member.id, 'UNIQUE PERSON').id, member.id);
+});
+test('claiming a personal identity through a shared link keeps invitation revocation independent', () => {
+  const person = auth.createMember('Claimed person', 'claimed-person');
+  const personal = auth.exchangeInvite(person.token)!;
+  const link = auth.rotateShareLink();
+  const claimed = auth.joinCollection(link, 'CLAIMED PERSON');
+  assert.equal(claimed.member.id, person.member.id);
+  auth.rotateShareLink();
+  assert.equal(auth.getSession(claimed.sessionToken), null);
+  assert.equal(auth.getSession(personal.sessionToken)?.id, person.member.id);
+  auth.revokeMember(person.member.folder);
+  assert.equal(auth.getSession(personal.sessionToken), null);
 });

@@ -102,8 +102,12 @@ export function invalidatePhotos() { const state = scanState(); state.generation
 export async function scanPhotos(members: Member[], allowStale = false): Promise<Photo[]> {
   const state = scanState();
   const attribute = (photos: Photo[]) => {
-    const names = new Map(members.map(member => [member.folder, member.name]));
-    return photos.map(photo => ({ ...photo, owner: names.get(photo.folder) || photo.folder || 'Shared folder' }));
+    const owners = new Map(members.flatMap(member => [member.folder, ...(member.folders || [])].map(folder => [folder.toLowerCase(), member] as const)));
+    return photos.map(photo => {
+      const originalFolder = decodeId(photo.id).split('/').length > 1 ? decodeId(photo.id).split('/')[0] : '';
+      const member = owners.get(originalFolder.toLowerCase());
+      return { ...photo, folder: member?.folder || originalFolder, owner: member?.name || originalFolder || 'Shared folder' };
+    });
   };
   if (state.cache && state.cache.root === config.photoRoot && Date.now() - state.cache.time < 15_000) return attribute(state.cache.photos);
   if (state.scanning) {

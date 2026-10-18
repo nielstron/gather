@@ -220,12 +220,18 @@ test('shared link, editable names, private gallery, Immich scan, uploads and ori
   const login = await bob.request.post(`${origin}${basePath}/api/join`, { headers: { origin }, data: { token, name: 'Bob' } });
   expect(login.status()).toBe(200);
   const bobFolder = (await login.json()).user.folder;
-  expect(bobFolder).not.toBe('bob');
+  expect(bobFolder).toBe('bob');
+  const returning = await bob.request.post(`${origin}${basePath}/api/join`, { headers: { origin }, data: { token, name: ' bOB ' } });
+  expect((await returning.json()).user.folder).toBe('bob');
+  const members = (await (await bob.request.get(`${origin}${basePath}/api/photos`)).json()).members;
+  expect(members.filter((member: any) => member.name.toLowerCase() === 'bob')).toHaveLength(1);
   const bobUpload = await bob.request.post(`${origin}${basePath}/api/upload?folder=alice`, { headers: { origin, 'x-filename': 'bobs-photo.png', 'content-type': 'application/octet-stream' }, data: await sharp({ create: { width: 320, height: 240, channels: 3, background: '#9dbdb0' } }).png().toBuffer() });
   expect(bobUpload.status()).toBe(201);
   expect((await bobUpload.json()).photo.folder).toBe(bobFolder);
   expect((await bob.request.get(`${origin}${basePath}/api/media/${uploaded.id}?kind=original`)).status()).toBe(200);
   await bob.close();
+  await rm(path.join(directory, 'photos', 'bob', 'bobs-photo.png'));
+  await page.request.get(`${origin}${basePath}/api/photos?refresh=1`);
 
   await page.getByRole('button', { name: 'Close uploads', exact: true }).click();
   await page.getByRole('button', { name: 'Change name for Alice', exact: true }).click();
