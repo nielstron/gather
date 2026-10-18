@@ -256,7 +256,8 @@
     const activeViewer = viewer;
     activeViewer.on('uiRegister', () => {
       activeViewer.ui?.registerElement({
-        name: 'download-original', order: 8, isButton: true, tagName: 'a', html: '↓ Download original',
+        name: 'download-original', order: 11, isButton: true, tagName: 'a', title: 'Download original',
+        html: { isCustomSVG: true, inner: '<path d="M15 6h2v12.17l4.59-4.58L23 15l-7 7-7-7 1.41-1.41L15 18.17V6ZM7 23h18v3H7z"/>' },
         onInit: (element) => {
           const update = () => { const current = viewable[activeViewer.currIndex]; if (current) { (element as HTMLAnchorElement).href = mediaUrl(current, 'original'); element.setAttribute('download', current.name); element.setAttribute('aria-label', `Download ${current.name}`); } };
           activeViewer.on('change', update); update();
