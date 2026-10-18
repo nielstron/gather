@@ -32,7 +32,7 @@ Search uses Immich semantic search by default: describe a scene or moment. Focus
 
 ## Download
 
-The gallery's download button opens contributor checkboxes with yourself deselected. Choose **Only updates since last download** to include undownloaded photos and changed originals. You can also select individual photos before opening download options, or download one original from the viewer.
+The gallery's download button opens contributor checkboxes with yourself deselected. The selection icon cycles through all contributors, none, and everyone except you; individual checkboxes let you customize the selection. Choose **Only updates since last download** to include undownloaded photos and changed originals. You can also select individual photos before opening download options, or download one original from the viewer.
 
 History is per contributor identity and collection. Downloading one person's photos leaves other people's undownloaded files available as updates. Opening or zooming a preview does not count as a download. History updates after the server finishes streaming; Gather cannot confirm that the browser saved the file to disk.
 

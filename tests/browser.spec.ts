@@ -1118,7 +1118,15 @@ test('download options default to other contributors and remember completed down
   const dialog = page.getByRole('dialog', { name: 'Download photos', exact: true });
   await expect(dialog.getByRole('checkbox', { name: 'Download self (you)', exact: true })).not.toBeChecked();
   await expect(dialog.getByRole('checkbox', { name: 'Download source', exact: true })).toBeChecked();
-  await dialog.getByRole('button', { name: 'Deselect all contributors' }).click();
+  await dialog.getByRole('button', { name: 'Select all contributors', exact: true }).click();
+  await expect(dialog.getByRole('checkbox', { name: 'Download self (you)', exact: true })).toBeChecked();
+  await dialog.getByRole('button', { name: 'Deselect all contributors', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: 'Download', exact: true })).toBeDisabled();
+  await dialog.getByRole('button', { name: 'Select all contributors except me', exact: true }).click();
+  await expect(dialog.getByRole('checkbox', { name: 'Download self (you)', exact: true })).not.toBeChecked();
+  await expect(dialog.getByRole('checkbox', { name: 'Download source', exact: true })).toBeChecked();
+  await dialog.getByRole('button', { name: 'Select all contributors', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Deselect all contributors', exact: true }).click();
   await dialog.getByRole('checkbox', { name: 'Download source', exact: true }).check();
   const downloading = page.waitForEvent('download', { timeout: 10_000 });
   await dialog.getByRole('button', { name: 'Download', exact: true }).click();
@@ -1128,7 +1136,8 @@ test('download options default to other contributors and remember completed down
   expect(archive.includes(Buffer.from('download-self/download.png'))).toBe(false);
   await dialog.getByRole('button', { name: 'Close download options' }).click();
   await page.getByRole('button', { name: 'Download photos', exact: true }).click();
-  await dialog.getByRole('button', { name: 'Deselect all contributors' }).click();
+  await dialog.getByRole('button', { name: 'Select all contributors', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Deselect all contributors', exact: true }).click();
   await dialog.getByRole('checkbox', { name: 'Download source', exact: true }).check();
   await dialog.getByRole('checkbox', { name: 'Only updates since last download' }).check();
   await expect(dialog.getByRole('button', { name: 'Download', exact: true })).toBeDisabled();
