@@ -26,7 +26,7 @@ For Google Photos, paste a public album link, choose **Preview album**, then sta
 
 Click a photo to open its preview; swipe or use arrow keys to move between photos. A cached thumbnail appears first, then a larger preview. Zooming requests full resolution. Browser Back closes the current preview or dialog.
 
-The sort picker offers ascending/descending order and filename/date sorting. Dates use filesystem modification times.
+The sort picker offers ascending/descending order and filename/date sorting. Dates use Immich’s camera-local capture time when available. Timestamped camera filenames are a fallback while indexing; filesystem modification time is used only when no capture date is available.
 
 Search uses Immich semantic search by default: describe a scene or moment. Focus the search field to reveal **Filters** and **People**. Filter by faces, dates, location, camera details, and other Immich search fields. Local filename/contributor search is available without Immich. Face choices and results are limited to this collection. Semantic search requires indexed smart-search embeddings; structured search requires Immich 3.2+.
 

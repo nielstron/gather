@@ -13,6 +13,7 @@
   const dispatch = createEventDispatcher<{ apply: CollectionSearch }>();
   type Row = { id: number; field: string; op: string; value: string; empty: boolean };
   let open = false;
+  let openedFromPeople = false;
   let peopleInput: HTMLInputElement;
   let modeInput: HTMLSelectElement;
   $: if (!visible) open = false;
@@ -69,9 +70,11 @@
     finally { portraitsLoaded = true; portraitsLoading = false; }
   }
   async function showFilters(peopleFirst = false) {
-    open = true;
+    if (open && openedFromPeople === peopleFirst) { open = false; return; }
+    open = true; openedFromPeople = peopleFirst;
     if (!peopleLoaded) void loadPeople();
     await tick();
+    if (!open) return;
     (peopleFirst ? peopleInput : modeInput)?.focus({ preventScroll: true });
   }
   function addRow(group: number) { groups = groups.map((rows, index) => index === group ? [...rows, { id: ++sequence, field: 'takenAt', op: 'gte', value: '', empty: false }] : rows); }

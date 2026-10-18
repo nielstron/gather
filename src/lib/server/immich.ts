@@ -3,9 +3,10 @@ import { createLimiter, mapConcurrent } from '../async';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { Photo } from '../types.js';
+import { filenameCaptureDate } from '../photo-date';
 
 type Config = { url: string; key: string; library: string; root: string; signature: string };
-type Asset = { id: string; width?: number; height?: number; previewReady: boolean };
+type Asset = { id: string; width?: number; height?: number; previewReady: boolean; takenAt?: string; hasCaptureDate?: boolean };
 type CachedAsset = { asset: Asset | null; expires: number; pendingUntil?: number };
 type SearchPage = { assets: { items: unknown[]; nextCursor?: string | null; nextPage?: string | null } };
 const cache = new Map<string, CachedAsset>();
@@ -110,8 +111,11 @@ function matchedAsset(value: unknown, config: Config, requested: Set<string>): {
   let width = Number(item.width ?? exif?.exifImageWidth);
   let height = Number(item.height ?? exif?.exifImageHeight);
   if (item.width == null && [5, 6, 7, 8].includes(Number(exif?.orientation))) [width, height] = [height, width];
+  const exifDate = typeof exif?.dateTimeOriginal === 'string' && Number.isFinite(Date.parse(exif.dateTimeOriginal)) ? exif.dateTimeOriginal : undefined;
+  const localDate = typeof item.localDateTime === 'string' && Number.isFinite(Date.parse(item.localDateTime)) ? item.localDateTime.replace(/Z$/, '') : undefined;
+  const fallbackDate = typeof item.fileCreatedAt === 'string' && Number.isFinite(Date.parse(item.fileCreatedAt)) ? item.fileCreatedAt : undefined;
   return { original: item.originalPath, asset: {
-    id: item.id,
+    id: item.id, takenAt: localDate || exifDate || fallbackDate, hasCaptureDate: !!exifDate || !!localDate,
     width: Number.isFinite(width) && width > 0 ? width : undefined,
     height: Number.isFinite(height) && height > 0 ? height : undefined,
     // Current Immich explicitly returns null until a thumbnail has a thumbhash.
@@ -200,6 +204,36 @@ async function resolveAssets(config: Config, paths: string[]): Promise<Map<strin
   return result;
 }
 
+// Capture dates are retained independently of short-lived preview mappings. This
+// keeps global sorting correct before pagination without rereading original files.
+const captureDates = new Map<string, { revision?: string; takenAt?: string; expires: number }>();
+function preferredDate(photo: Photo, asset?: Asset | null) {
+  return asset?.hasCaptureDate ? asset.takenAt : photo.takenAt || filenameCaptureDate(photo.name) || asset?.takenAt;
+}
+export async function enrichPhotoDates(photos: Photo[]): Promise<Photo[]> {
+  let config: Config | null;
+  try { config = configuration(); } catch { return photos; }
+  if (!config || !photos.length) return photos;
+  const current = config;
+  const key = (photo: Photo) => assetKey(current, originalPath(current, decodePhotoId(photo.id)));
+  const missing = photos.filter(photo => { const date = captureDates.get(key(photo)); return !date || date.revision !== photo.revision || date.expires < Date.now(); });
+  if (missing.length) {
+    const work = resolveAssets(current, missing.map(photo => originalPath(current, decodePhotoId(photo.id)))).then(assets => {
+      for (const photo of missing) {
+        const asset = assets.get(originalPath(current, decodePhotoId(photo.id)));
+        captureDates.set(key(photo), { revision: photo.revision, takenAt: preferredDate(photo, asset), expires: Date.now() + (asset?.hasCaptureDate ? 300_000 : 10_000) });
+      }
+      while (captureDates.size > 20_000) captureDates.delete(captureDates.keys().next().value!);
+    }).catch(() => {});
+    let deadline: ReturnType<typeof setTimeout>;
+    await Promise.race([work, new Promise<void>(resolve => { deadline = setTimeout(resolve, 2000); })]).finally(() => clearTimeout(deadline));
+  }
+  return photos.map(photo => {
+    const date = captureDates.get(key(photo));
+    return date?.revision === photo.revision && date?.takenAt ? { ...photo, takenAt: date.takenAt } : photo;
+  });
+}
+
 export async function enrichPhotos(photos: Photo[]): Promise<{ photos: Photo[]; previewService: 'ready' | 'unconfigured' | 'unavailable' }> {
   try {
     const config = configuration();
@@ -212,7 +246,7 @@ export async function enrichPhotos(photos: Photo[]): Promise<{ photos: Photo[]; 
     return { previewService: 'ready', photos: photos.map((photo, index) => {
       const asset = assets.get(paths[index]);
       const mediaPending = (cache.get(assetKey(config, paths[index]))?.pendingUntil ?? 0) > Date.now();
-      return { ...photo, width: asset?.width ?? photo.width, height: asset?.height ?? photo.height,
+      return { ...photo, ...(preferredDate(photo, asset) ? { takenAt: preferredDate(photo, asset) } : {}), width: asset?.width ?? photo.width, height: asset?.height ?? photo.height,
         previewStatus: asset?.previewReady && !mediaPending ? 'ready' : 'pending' };
     }) };
   } catch {

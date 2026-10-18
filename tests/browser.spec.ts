@@ -80,7 +80,7 @@ test.beforeAll(async () => {
           const id = indexed.get(originalPath)!;
           const name = originalPath.split('/').at(-1)!;
           const person = name === 'weekend-0.jpg' ? { id: '11111111-1111-4111-8111-111111111111', name: 'Alice face' } : { id: '22222222-2222-4222-8222-222222222222', name: 'Bob face' };
-          return { id, originalPath, libraryId, ...dimensions.get(id), thumbhash: 'ready', people: [person], city: name === 'weekend-0.jpg' ? 'Paris' : 'Berlin' };
+          return { id, originalPath, libraryId, ...dimensions.get(id), thumbhash: 'ready', ...(name === 'old-capture-new-upload.jpg' ? { localDateTime: '2020-01-01T04:00:00.000Z', exifInfo: { dateTimeOriginal: '2020-01-01T12:00:00Z' } } : {}), people: [person], city: name === 'weekend-0.jpg' ? 'Paris' : 'Berlin' };
         });
         let matches = items.filter((item: any) => {
           const filters = body.filter || {};
@@ -1127,6 +1127,33 @@ test('download options default to other contributors and remember completed down
   const choosing = page.waitForEvent('filechooser');
   await upload.getByRole('button', { name: /Upload from storage/ }).click();
   await choosing; await expect(upload).not.toBeVisible();
+});
+
+test('search shortcuts toggle closed and newly added old photos sort by capture date', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const person = auth.createMember('Capture dates', 'capture-dates');
+  const session = auth.exchangeInvite(person.token)!;
+  await page.context().addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
+  await writeFile(path.join(directory, 'photos', 'capture-dates', 'old-capture-new-upload.jpg'), await sharp({ create: { width: 42, height: 36, channels: 3, background: '#792863' } }).jpeg().toBuffer());
+  await indexFiles(); await page.request.get(`${origin}${basePath}/api/photos?refresh=1`);
+  await page.goto(`${origin}${basePath}/`);
+  await page.getByLabel('Search photos', { exact: true }).click();
+  const filters = page.getByRole('button', { name: 'Filters', exact: true });
+  const people = page.getByRole('button', { name: 'People', exact: true });
+  for (const button of [filters, people]) {
+    await button.click(); await expect(page.getByLabel('Search mode', { exact: true })).toBeVisible();
+    await button.click(); await expect(page.getByLabel('Search mode', { exact: true })).not.toBeVisible();
+  }
+  await filters.click(); await people.click(); await expect(page.getByLabel('Find a person', { exact: true })).toBeFocused();
+  await people.click(); await expect(page.getByLabel('Search mode', { exact: true })).not.toBeVisible();
+  const response = await page.request.get(`${origin}${basePath}/api/photos?sort=date&direction=asc&limit=1`);
+  const first = (await response.json()).photos[0];
+  expect(first.name).toBe('old-capture-new-upload.jpg');
+  expect(first.takenAt).toBe('2020-01-01T04:00:00.000');
+  expect(first.modifiedAt.slice(0, 10)).not.toBe('2020-01-01');
+  await page.locator('#folder-filter').selectOption('capture-dates');
+  await expect(page.locator('.photo-tile')).toHaveCount(1);
+  await expect(page.locator('.timeline-date')).toContainText('2020');
 });
 
 test('one admin creates and switches collections while guest access, files, and invitations stay isolated', async ({ page, browser, request }) => {

@@ -3,7 +3,7 @@ import { json } from '@sveltejs/kit';
 import { listMembers } from '$lib/server/auth';
 import { scanPhotos, invalidatePhotos, MediaError } from '$lib/server/media';
 import { validateSearch } from '$lib/search';
-import { enrichPhotos, searchCollection } from '$lib/server/immich';
+import { enrichPhotos, enrichPhotoDates, searchCollection } from '$lib/server/immich';
 import { apiError, boundedText } from '$lib/server/http';
 import type { RequestHandler } from './$types';
 
@@ -30,7 +30,8 @@ export const GET: RequestHandler = async ({ url, request }) => {
     const subset = all.filter(photo => folder === null || photo.folder.toLowerCase() === folder.toLowerCase());
     const { photos: matching, truncated: searchTruncated } = await searchCollection(subset, query, options, request.signal);
     const relevance = url.searchParams.get('sort') === 'relevance' || (!url.searchParams.has('sort') && options.mode === 'semantic' && !!(query || options.queryAssetId));
-    const ordered = relevance || options.orderBy ? (relevance && !options.orderBy && url.searchParams.get('direction') === 'asc' ? [...matching].reverse() : matching) : sortPhotos(matching, url.searchParams.get('sort') || 'date', url.searchParams.get('direction') || 'desc');
+    const dated = await enrichPhotoDates(matching);
+    const ordered = relevance || options.orderBy ? (relevance && !options.orderBy && url.searchParams.get('direction') === 'asc' ? [...dated].reverse() : dated) : sortPhotos(dated, url.searchParams.get('sort') || 'date', url.searchParams.get('direction') || 'desc');
     const offset = Math.max(0, Number.parseInt(url.searchParams.get('offset') || '0', 10) || 0);
     const limit = Math.min(300, Math.max(1, Number.parseInt(url.searchParams.get('limit') || '150', 10) || 150));
     const { photos, previewService } = await enrichPhotos(ordered.slice(offset, offset + limit));

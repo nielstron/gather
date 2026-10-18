@@ -7,6 +7,7 @@
   import { saveQueuedUpload, updateQueuedUpload, removeQueuedUpload, restoreQueuedUploads } from '$lib/upload-queue';
   import { transferResumable, TransferError } from '$lib/resumable-upload';
   import { sortPhotos } from '$lib/sort';
+  import { photoDate } from '$lib/photo-date';
   import { mapConcurrent } from '$lib/async';
   import { onMount } from 'svelte';
   import { Button, Badge } from '@immich/ui';
@@ -139,7 +140,7 @@
   $: hasSearch = !!query.trim() || !!Object.keys(searchOptions.filter || {}).length || !!searchOptions.queryAssetId;
   $: semanticQuery = searchOptions.mode === 'semantic' && !!(query.trim() || searchOptions.queryAssetId);
   $: sortChoice = `${sort === 'relevance' && !semanticQuery && !searchOptions.orderBy ? 'newest' : sort}:${sortDirection}`;
-  $: sortLabel = sortChoice.startsWith('name:') ? `Filename · ${sortDirection === 'asc' ? 'A–Z (ascending)' : 'Z–A (descending)'}` : sortChoice.startsWith('relevance:') ? `${searchOptions.orderBy ? 'Search order' : 'Relevance'} · ${sortDirection === 'asc' ? 'Ascending' : 'Descending'}` : `Date added · ${sortDirection === 'asc' ? 'Oldest first (ascending)' : 'Newest first (descending)'}`;
+  $: sortLabel = sortChoice.startsWith('name:') ? `Filename · ${sortDirection === 'asc' ? 'A–Z (ascending)' : 'Z–A (descending)'}` : sortChoice.startsWith('relevance:') ? `${searchOptions.orderBy ? 'Search order' : 'Relevance'} · ${sortDirection === 'asc' ? 'Ascending' : 'Descending'}` : `Date taken · ${sortDirection === 'asc' ? 'Oldest first (ascending)' : 'Newest first (descending)'}`;
   $: sortedPhotos = searchOrder ? photos : sortPhotos(photos, sort, sortDirection);
   $: photoIndexes = new Map(sortedPhotos.map((photo, index) => [photo.id, index]));
   $: timelineGroups = groupTimeline(sortedPhotos, galleryWidth, searchOrder ? 'name' : sort);
@@ -164,7 +165,7 @@
   function groupTimeline(items: Photo[], width: number, order: string) {
     const groups = new Map<string, { key: string; label: string; photos: Photo[] }>();
     for (const photo of items) {
-      const date = new Date(photo.modifiedAt);
+      const date = new Date(photoDate(photo));
       const key = order === 'name' ? 'all' : `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
       if (!groups.has(key)) groups.set(key, { key, label: order === 'name' ? '' : dayLabel(date), photos: [] });
       groups.get(key)!.photos.push(photo);

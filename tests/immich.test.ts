@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { after, before, test } from 'node:test';
-import { enrichPhotos, fetchImmichImage, ImmichError, requestLibraryScan, searchCollection, collectionPeople } from '../src/lib/server/immich.js';
+import { enrichPhotoDates, enrichPhotos, fetchImmichImage, ImmichError, requestLibraryScan, searchCollection, collectionPeople } from '../src/lib/server/immich.js';
 import type { Photo } from '../src/lib/types.js';
 
 const LIBRARY = '11111111-1111-4111-8111-111111111111';
@@ -463,4 +463,32 @@ test('an old search cannot replace cached assets after the Immich connection cha
   finishOld();
   await oldSearch;
   assert.equal(await (await fetchImmichImage('alice/summer.jpg', 'thumbnail')).text(), 'current-image');
+});
+
+test('capture dates prefer camera-local metadata and retain file revisions for change detection', async () => {
+  configure();
+  handler = (_req, res) => json(res, [asset(undefined, { localDateTime: '2026-10-12T15:44:38.827Z', fileCreatedAt: '2026-10-12T22:44:38.827Z', exifInfo: { dateTimeOriginal: '2026-10-12T22:44:38.827+00:00' } })]);
+  const original = { ...photo(), modifiedAt: '2026-10-18T14:20:52Z', revision: 'file-version' };
+  const first = (await enrichPhotoDates([original]))[0];
+  assert.equal(first.takenAt, '2026-10-12T15:44:38.827');
+  assert.equal(first.modifiedAt, original.modifiedAt);
+  assert.equal(first.revision, original.revision);
+  const calls = requests.length;
+  assert.equal((await enrichPhotoDates([original]))[0].takenAt, first.takenAt);
+  assert.equal(requests.length, calls, 'capture-date lookups are shared and cached');
+});
+test('unindexed Pixel photos use filename timestamps and date sorting precedes pagination', async () => {
+  configure();
+  handler = (_req, res) => json(res, []);
+  const { sortPhotos } = await import('../src/lib/sort');
+  const photos = ['PXL_20261012_224438827.MP.jpg', 'PXL_20261016_012935035.MP.jpg'].map(name => ({ ...photo(`alice/${name}`), modifiedAt: '2026-10-18T14:20:52Z' }));
+  const dated = await enrichPhotoDates(photos);
+  assert.equal(sortPhotos(dated, 'date', 'asc').slice(0, 1)[0].name, photos[0].name);
+  assert.equal(sortPhotos(dated, 'date', 'desc').slice(0, 1)[0].name, photos[1].name);
+});
+test('camera-local dates remain authoritative when people metadata omits EXIF', async () => {
+  configure();
+  const name = 'PXL_20261016_012935035.MP.jpg';
+  handler = (_req, res) => json(res, [asset(`/external/shared photos/alice/${name}`, { localDateTime: '2026-10-15T18:29:35.035Z' })]);
+  assert.equal((await enrichPhotoDates([photo(`alice/${name}`)]))[0].takenAt, '2026-10-15T18:29:35.035');
 });

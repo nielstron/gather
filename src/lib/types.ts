@@ -10,6 +10,7 @@ export type Photo = {
   height: number;
   bytes: number;
   modifiedAt: string;
+  takenAt?: string;
   previewStatus: 'ready' | 'pending' | 'unavailable';
 };
 export type PhotoList = {
