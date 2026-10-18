@@ -10,7 +10,6 @@
   export let src: string;
   export let alt: string;
   export let eager = false;
-  export let imageStyle = '';
   const dispatch = createEventDispatcher<{ error: void }>();
   let element: HTMLImageElement;
   let objectUrl: string | undefined;
@@ -58,4 +57,4 @@
   });
 </script>
 
-<img style={imageStyle} bind:this={element} src={objectUrl} {alt} decoding="async" on:error={() => { if (objectUrl) dispatch('error'); }} />
+<img bind:this={element} src={objectUrl} {alt} decoding="async" on:error={() => { if (objectUrl) dispatch('error'); }} />

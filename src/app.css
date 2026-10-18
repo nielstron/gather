@@ -130,3 +130,7 @@
 .pswp .pswp__button .pswp__icn{width:24px;height:24px;top:50%;left:50%;margin:0;transform:translate(-50%,-50%);stroke:none}
 .pswp .gather-zoom-out,.pswp--zoomed-in .gather-zoom-in{display:none}
 .pswp--zoomed-in .gather-zoom-out{display:block}
+
+@media(min-width:761px){.pswp--gather-info .pswp__top-bar{right:360px;width:auto}.pswp--gather-info .pswp__button--arrow--next{right:360px}.pswp--gather-info .pswp__photo-caption{right:430px}}
+@media(max-width:760px){.pswp--gather-info .pswp__photo-caption{bottom:calc(min(72dvh,660px) + 16px)}.pswp--gather-info .pswp__button--arrow{top:calc((100dvh - min(72dvh,660px))/2)}}
+@media(max-width:480px){.pswp__top-bar .pswp__button{flex:0 0 44px;width:44px}.pswp__counter{margin-inline-start:12px;margin-right:auto;font-size:12px}.pswp__preloader{position:absolute;left:12px;top:32px;width:22px;height:22px;margin:0}.pswp__preloader .pswp__icn{width:18px;height:18px;left:2px;top:2px}}

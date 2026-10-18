@@ -45,3 +45,9 @@ Ownership follows the signed-in contributor's single folder, rather than the upl
 ## Limits
 
 The current implementation supports up to 100 collections, 20,000 photos per collection, and 12 directory levels. The default per-file upload limit is 50 MB. Explicit photo selections are limited to 200 photos; contributor-based archives can include the whole collection. Photo editing is not provided.
+
+## Photo information
+
+Open a photo and select **Info** (or press **I**) to see its description, capture time, filename, dimensions, size, camera, lens, exposure settings, people, location, and tags when Immich has indexed them. The panel follows the current photo. Back or Escape closes the panel before closing the viewer; on phones it opens as a bottom sheet. Location maps are provided by OpenStreetMap.
+
+Metadata and person portraits come from Immich. Original downloads continue to stream directly from the shared files.

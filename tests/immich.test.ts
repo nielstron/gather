@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { after, before, test } from 'node:test';
-import { enrichPhotoDates, enrichPhotos, fetchImmichImage, ImmichError, requestLibraryScan, searchCollection, collectionPeople } from '../src/lib/server/immich.js';
+import { enrichPhotoDates, enrichPhotos, fetchImmichImage, ImmichError, requestLibraryScan, searchCollection, collectionPeople, personThumbnail, photoInformation } from '../src/lib/server/immich.js';
 import type { Photo } from '../src/lib/types.js';
 
 const LIBRARY = '11111111-1111-4111-8111-111111111111';
@@ -385,50 +385,44 @@ test('filters cannot widen a collection, original-path restrictions intersect, a
   assert.equal(requests.length, 2);
 });
 
-test('people and face coordinates are discovered only from shared assets, with sanitized responses', async () => {
+test('people and native portraits are restricted to people found in shared assets', async () => {
   configure();
   handler = (req, res, body) => {
     if (req.url === '/api/search/metadata') {
       assert.equal(body.withPeople, true);
       json(res, [asset(undefined, { people: [{ id: ASSET, name: 'Alice', thumbnailPath: '/private/portrait' }, { id: LIBRARY, name: 'Hidden person', isHidden: true }] }), asset('/private/other.jpg', { people: [{ id: LIBRARY, name: 'Private outsider' }] })]);
     } else {
-      assert.equal(req.url, `/api/faces?id=${ASSET}`);
-      res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify([{ imageWidth: 1600, imageHeight: 900, boundingBoxX1: 100, boundingBoxX2: 300, boundingBoxY1: 150, boundingBoxY2: 350, person: { id: ASSET, name: 'Alice', thumbnailPath: '/private/portrait' } }]));
+      assert.equal(req.url, `/api/people/${ASSET}/thumbnail`);
+      res.writeHead(200, { 'content-type': 'image/jpeg' }).end('native portrait');
     }
   };
   const people = await collectionPeople([photo()]);
-  assert.equal(people.length, 1);
-  assert.equal(people[0].name, 'Alice');
+  assert.equal(people.length, 1); assert.equal(people[0].name, 'Alice');
   assert.equal(people[0].photoId, photo().id);
-  assert.equal(people[0].face?.boundingBoxX1, 100);
-  assert(!JSON.stringify(people).includes('private'));
-  assert(!JSON.stringify(people).includes('Hidden'));
+  assert(!JSON.stringify(people).includes('private')); assert(!JSON.stringify(people).includes('Hidden'));
+  assert.equal(requests.length, 1, 'names do not wait for any image requests');
+  assert.equal(await (await personThumbnail(ASSET, [photo()])).text(), 'native portrait');
   assert.equal(requests.length, 2);
-  await collectionPeople([photo()]);
-  assert.equal(requests.length, 2, 'both collection people and face coordinates are cached');
+  await assert.rejects(personThumbnail(LIBRARY, [photo()]), (error: any) => error.status === 404);
+  assert.equal(requests.length, 2, 'an outsider never reaches the portrait endpoint');
 });
 
-test('people names are returned without waiting for portrait requests or fetching EXIF', async () => {
+test('people names are returned without waiting for portraits or fetching EXIF', async () => {
   configure();
   handler = (req, res, body) => {
-    assert.equal(req.url, '/api/search/metadata', 'the fast names request must never fetch faces');
-    assert.equal(body.withExif, false);
+    assert.equal(req.url, '/api/search/metadata'); assert.equal(body.withExif, false);
     json(res, [asset(undefined, { people: [{ id: ASSET, name: 'Alice' }] })]);
   };
-  const people = await collectionPeople([photo()], undefined, false);
-  assert.equal(people[0].name, 'Alice');
-  assert.equal(people[0].count, 1);
-  assert.equal(people[0].face, undefined);
-  assert.equal(requests.length, 1);
+  const people = await collectionPeople([photo()]);
+  assert.equal(people[0].name, 'Alice'); assert.equal(people[0].count, 1); assert.equal(requests.length, 1);
 });
 
-test('people filters work with a restricted key even if face crops are unavailable', async () => {
+test('unavailable native portraits never block usable people filters', async () => {
   configure();
   handler = (req, res) => req.url === '/api/search/metadata' ? json(res, [asset(undefined, { people: [{ id: ASSET, name: 'Alice' }] })]) : res.writeHead(403).end();
   const people = await collectionPeople([photo()]);
   assert.equal(people.length, 1);
-  assert.equal(people[0].face, undefined);
+  await assert.rejects(personThumbnail(ASSET, [photo()]), /person.read/);
 });
 
 test('filename search remains local and unavailable semantic search never silently searches filenames', async () => {
@@ -491,4 +485,63 @@ test('camera-local dates remain authoritative when people metadata omits EXIF', 
   const name = 'PXL_20261016_012935035.MP.jpg';
   handler = (_req, res) => json(res, [asset(`/external/shared photos/alice/${name}`, { localDateTime: '2026-10-15T18:29:35.035Z' })]);
   assert.equal((await enrichPhotoDates([photo(`alice/${name}`)]))[0].takenAt, '2026-10-15T18:29:35.035');
+});
+
+
+test('photo information uses native metadata, validates membership, and caches by revision', async () => {
+  configure();
+  handler = (req, res) => {
+    if (req.url === '/api/search/metadata') return json(res, [asset()]);
+    assert.equal(req.url, `/api/assets/${ASSET}`);
+    res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(asset(undefined, {
+      localDateTime: '2026-10-12T15:44:38.827Z', originalMimeType: 'image/jpeg', owner: { email: 'private@example.test' },
+      exifInfo: { description: 'A shared sunset', make: 'Google', model: 'Pixel 9', lensModel: 'Main lens', fNumber: 1.7, iso: 100, focalLength: 6.9, exposureTime: '1/120', timeZone: 'America/Los_Angeles', latitude: 0, longitude: 0, city: 'Paris', rating: 5 },
+      people: [{ id: ASSET, name: 'Alice' }, { id: LIBRARY, name: 'Hidden', isHidden: true }], tags: [{ value: 'Roadtrip' }]
+    })));
+  };
+  const info = await photoInformation('alice/summer.jpg', 'version-1');
+  assert.equal(info.state, 'ready'); assert.equal(info.metadata?.takenAt, '2026-10-12T15:44:38.827');
+  assert.equal(info.metadata?.iso, 100); assert.equal(info.metadata?.latitude, 0); assert.equal(info.metadata?.longitude, 0);
+  assert.deepEqual(info.metadata?.people, [{ id: ASSET, name: 'Alice' }]); assert.deepEqual(info.metadata?.tags, ['Roadtrip']);
+  assert(!JSON.stringify(info).includes('private')); assert(!JSON.stringify(info).includes('originalPath'));
+  await photoInformation('alice/summer.jpg', 'version-1'); assert.equal(requests.length, 2);
+  await photoInformation('alice/summer.jpg', 'version-2'); assert.equal(requests.length, 3);
+});
+
+test('photo information rejects mismatched asset responses and pending files never request unrelated metadata', async () => {
+  configure();
+  handler = (req, res) => {
+    if (req.url === '/api/search/metadata') return json(res, [asset()]);
+    res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(asset('/private/other.jpg')));
+  };
+  await assert.rejects(photoInformation('alice/summer.jpg', 'mismatch'), (error: any) => error.status === 404);
+  configure(); handler = (_req, res) => json(res, []);
+  assert.deepEqual(await photoInformation('alice/new.jpg', 'pending'), { state: 'pending' });
+  assert.equal(requests.length, 1);
+});
+
+test('stalled native portraits leave metadata requests available', async () => {
+  configure();
+  let started!: () => void;
+  const firstFour = new Promise<void>(resolve => { started = resolve; });
+  const held: ServerResponse[] = []; let released = false;
+  handler = (req, res) => {
+    if (req.url === '/api/search/metadata') return json(res, [asset(undefined, { people: [{ id: ASSET, name: 'Alice' }] })]);
+    if (req.url === `/api/assets/${ASSET}`) { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(asset())); return; }
+    assert.equal(req.url, `/api/people/${ASSET}/thumbnail`);
+    if (released) { res.writeHead(200, { 'content-type': 'image/jpeg' }).end('portrait'); return; }
+    held.push(res); if (held.length === 4) started();
+  };
+  await collectionPeople([photo()]);
+  const portraits = Array.from({ length: 8 }, () => personThumbnail(ASSET, [photo()]));
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await firstFour;
+    const result = await Promise.race([photoInformation('alice/summer.jpg', 'parallel-info'), new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error('Portraits blocked metadata')), 1000); })]);
+    assert.equal(result.state, 'ready'); assert.equal(held.length, 4);
+  } finally {
+    clearTimeout(deadline); released = true;
+    for (const response of held) response.writeHead(200, { 'content-type': 'image/jpeg' }).end('portrait');
+    for (const response of await Promise.all(portraits)) await response.body?.cancel();
+  }
 });

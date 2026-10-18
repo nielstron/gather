@@ -15,6 +15,7 @@ const CACHE_LIMIT = 2_000;
 const BATCH_SIZE = 100;
 const NEGATIVE_TTL = 10_000;
 const metadataRequests = createLimiter(8);
+const portraitRequests = createLimiter(4);
 const legacyConfigurations = new Set<string>();
 export type LibraryScanResult = { state: 'queued' | 'scheduled' | 'unconfigured' | 'unavailable'; message?: string };
 const SCAN_COOLDOWN = 30_000;
@@ -456,64 +457,64 @@ export async function searchCollection(photos: Photo[], query: string, options: 
   }), truncated: result.truncated };
 }
 
-const faceCache = new Map<string, { expires: number; faces: Record<string, any>[] }>();
-
-export async function collectionPeople(photos: Photo[], signal?: AbortSignal, withFaces = true): Promise<import('../search').SearchPerson[]> {
+export async function collectionPeople(photos: Photo[], signal?: AbortSignal): Promise<import('../search').SearchPerson[]> {
   const result = await searchSharedAssets(photos, { mode: 'metadata' }, '', true, signal);
   const config = configuration()!;
   const byPath = new Map(photos.map(photo => [originalPath(config, decodePhotoId(photo.id)), photo]));
   const people = new Map<string, import('../search').SearchPerson>();
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   for (const item of result.items) {
-    const photo = byPath.get(item.originalPath as string)!;
-    if (!Array.isArray(item.people)) continue;
+    const photo = byPath.get(item.originalPath as string);
+    if (!photo || !Array.isArray(item.people)) continue;
     for (const person of item.people) {
       if (!person || typeof person.id !== 'string' || !uuid.test(person.id) || person.isHidden) continue;
       const current = people.get(person.id);
       if (current) { current.count++; continue; }
-      const face = Array.isArray(person.faces) ? person.faces[0] : undefined;
-      const faceKeys = ['imageWidth', 'imageHeight', 'boundingBoxX1', 'boundingBoxY1', 'boundingBoxX2', 'boundingBoxY2'];
-      const safeFace = face && faceKeys.every(key => Number.isFinite(face[key])) && face.imageWidth > 0 && face.imageHeight > 0 && face.boundingBoxX2 > face.boundingBoxX1 && face.boundingBoxY2 > face.boundingBoxY1
-        ? Object.fromEntries(faceKeys.map(key => [key, face[key]])) as import('../search').SearchPerson['face'] : undefined;
-      people.set(person.id, { id: person.id, name: typeof person.name === 'string' ? person.name.slice(0, 200) : '', photoId: photo.id, revision: photo.revision, count: 1, ...(safeFace ? { face: safeFace } : {}) });
+      people.set(person.id, { id: person.id, name: typeof person.name === 'string' ? person.name.slice(0, 200) : '', photoId: photo.id, revision: photo.revision, count: 1 });
     }
   }
-  // Crop only faces from a shared original, never a person's global portrait.
-  // Older/limited keys can still filter people by name without face.read.
-  const representatives = new Map<string, string>();
-  const assetsByPath = new Map(result.items.map(item => [item.originalPath, item]));
-  for (const person of withFaces ? people.values() : []) {
-    if (person.face) continue;
-    const original = originalPath(config, decodePhotoId(person.photoId));
-    const asset = assetsByPath.get(original);
-    if (asset) representatives.set(person.photoId, asset.id as string);
-  }
-  let denied = false;
-  // Portrait enrichment is optional and must never hold up usable names and filters.
-  const faceSignal = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(4_000)]);
-  await mapConcurrent(withFaces ? [...representatives] : [], 4, async ([photoId, assetId]) => {
-    if (denied || faceSignal.aborted) return;
-    const key = `${config.signature}:${assetId}`;
-    let faces = faceCache.get(key);
-    try {
-      if (!faces || faces.expires <= Date.now()) {
-        const response = await metadataRequests(() => request(config, `/faces?id=${encodeURIComponent(assetId)}`, {}, faceSignal));
-        if (!response.ok) { await response.body?.cancel(); if (response.status === 403) denied = true; return; }
-        const data = await response.json();
-        if (!Array.isArray(data)) return;
-        faces = { expires: Date.now() + 300_000, faces: data };
-        faceCache.set(key, faces);
-        while (faceCache.size > CACHE_LIMIT) faceCache.delete(faceCache.keys().next().value!);
-      }
-      for (const face of faces.faces) {
-        const person = people.get(face.person?.id);
-        if (!person || person.photoId !== photoId) continue;
-        const keys = ['imageWidth', 'imageHeight', 'boundingBoxX1', 'boundingBoxY1', 'boundingBoxX2', 'boundingBoxY2'];
-        if (keys.every(key => Number.isFinite(face[key])) && face.imageWidth > 0 && face.imageHeight > 0 && face.boundingBoxX2 > face.boundingBoxX1 && face.boundingBoxY2 > face.boundingBoxY1) {
-          person.face = Object.fromEntries(keys.map(key => [key, face[key]])) as import('../search').SearchPerson['face'];
-        }
-      }
-    } catch { /* Names and filters remain useful if face crops are unavailable. */ }
-  });
   return [...people.values()].sort((a, b) => Number(!!b.name) - Number(!!a.name) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+}
+
+export async function personThumbnail(personId: string, photos: Photo[], signal?: AbortSignal): Promise<Response> {
+  if (!(await collectionPeople(photos, signal)).some(person => person.id === personId)) throw new ImmichError(404, 'Person not found in this collection.');
+  const config = configuration()!;
+  const response = await portraitRequests(() => request(config, `/people/${encodeURIComponent(personId)}/thumbnail`, {}, signal));
+  if (!response.ok) { await response.body?.cancel(); throw new ImmichError(response.status === 404 ? 404 : 503, 'Person thumbnail is unavailable. The integration key needs person.read.'); }
+  const contentType = response.headers.get('content-type')?.split(';')[0].toLowerCase();
+  if (!contentType?.startsWith('image/')) { await response.body?.cancel(); throw unavailable(); }
+  return new Response(response.body, { headers: { 'Content-Type': contentType, 'Cache-Control': 'private, max-age=60' } });
+}
+
+const informationCache = new Map<string, { expires: number; value: import('../types').PhotoInformation }>();
+/** Read indexed metadata from Immich; never parse originals or expose internal paths. */
+export async function photoInformation(relative: string, revision: string, signal?: AbortSignal): Promise<import('../types').PhotoInformation> {
+  const config = configuration();
+  if (!config) return { state: 'unconfigured' };
+  const original = originalPath(config, relative), key = `${assetKey(config, original)}:${revision}`;
+  const cached = informationCache.get(key);
+  if (cached && cached.expires > Date.now()) return cached.value;
+  const asset = (await resolveAssets(config, [original])).get(original);
+  if (!asset) return { state: 'pending' };
+  const response = await metadataRequests(() => request(config, `/assets/${asset.id}`, {}, AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(6_000)])));
+  if (!response.ok) { await response.body?.cancel(); throw new ImmichError(503, 'Photo information is unavailable. Check the Immich integration key and connection.'); }
+  const item = await response.json() as Record<string, any>;
+  if (!matchedAsset(item, config, new Set([original]))) throw new ImmichError(404, 'Photo information does not belong to this collection.');
+  const exif = item.exifInfo && typeof item.exifInfo === 'object' ? item.exifInfo : {};
+  const metadata: import('../types').PhotoMetadata = { people: [], tags: [] };
+  for (const field of ['description', 'timeZone', 'make', 'model', 'lensModel', 'exposureTime', 'city', 'state', 'country'] as const) {
+    if (typeof exif[field] === 'string' && exif[field].trim()) metadata[field] = exif[field].trim().slice(0, field === 'description' ? 4000 : 300);
+  }
+  for (const field of ['fNumber', 'focalLength', 'iso', 'rating'] as const) if (typeof exif[field] === 'number' && Number.isFinite(exif[field]) && exif[field] > 0) metadata[field] = exif[field];
+  if (typeof exif.latitude === 'number' && typeof exif.longitude === 'number' && Number.isFinite(exif.latitude) && Number.isFinite(exif.longitude) && Math.abs(exif.latitude) <= 90 && Math.abs(exif.longitude) <= 180) { metadata.latitude = exif.latitude; metadata.longitude = exif.longitude; }
+  const matched = matchedAsset(item, config, new Set([original]))!.asset;
+  if (matched.hasCaptureDate) metadata.takenAt = matched.takenAt;
+  metadata.width = matched.width; metadata.height = matched.height;
+  if (typeof item.originalMimeType === 'string') metadata.mimeType = item.originalMimeType.slice(0, 100);
+  if (Array.isArray(item.people)) metadata.people = item.people.filter((person: any) => person && !person.isHidden && typeof person.id === 'string' && /^[\da-f-]{36}$/i.test(person.id)).slice(0, 100).map((person: any) => ({ id: person.id, name: typeof person.name === 'string' ? person.name.slice(0, 200) : '' }));
+  if (Array.isArray(item.tags)) metadata.tags = item.tags.filter((tag: any) => tag && typeof tag.value === 'string').slice(0, 100).map((tag: any) => tag.value.slice(0, 200));
+  const value = { state: 'ready' as const, metadata };
+  informationCache.set(key, { value, expires: Date.now() + 60_000 });
+  while (informationCache.size > 500) informationCache.delete(informationCache.keys().next().value!);
+  return value;
 }

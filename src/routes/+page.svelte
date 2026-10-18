@@ -3,13 +3,13 @@
   import { page } from '$app/stores';
   import { collectionBase } from '$lib/collection-path';
   $: base = collectionBase($page.url.pathname, appBase);
-  import { mdiDownload, mdiTrashCanOutline, mdiMagnifyPlusOutline, mdiMagnifyMinusOutline, mdiClose, mdiChevronLeft, mdiChevronRight } from '@mdi/js';
+  import { mdiDownload, mdiTrashCanOutline, mdiMagnifyPlusOutline, mdiMagnifyMinusOutline, mdiClose, mdiChevronLeft, mdiChevronRight, mdiInformationOutline } from '@mdi/js';
   import { saveQueuedUpload, updateQueuedUpload, removeQueuedUpload, restoreQueuedUploads } from '$lib/upload-queue';
   import { transferResumable, TransferError } from '$lib/resumable-upload';
   import { sortPhotos } from '$lib/sort';
   import { photoDate } from '$lib/photo-date';
   import { mapConcurrent } from '$lib/async';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { Button, Badge } from '@immich/ui';
   import justifiedLayout from 'justified-layout';
   import PhotoSwipe from 'photoswipe';
@@ -22,6 +22,7 @@
   import type { CollectionSearch } from '$lib/search';
   import Thumbnail from '$lib/components/Thumbnail.svelte';
   import Icon from '$lib/components/Icon.svelte';
+  import PhotoInfo from '$lib/components/PhotoInfo.svelte';
   import type { Member, Photo, PhotoList } from '$lib/types';
 
   export let data: { readOnly: boolean; user: Member | null; members: Member[]; collectionName: string; uploadOwnerScope: string; maxUploadBytes: number; immichConfigured: boolean };
@@ -130,6 +131,37 @@
   let pendingPhoto: Photo | null = null;
   let pendingDialog: HTMLDialogElement;
   let viewer: PhotoSwipe | undefined;
+  let viewedPhoto: Photo | null = null;
+  let infoPhoto: Photo | null = null;
+  let infoOpen = false;
+  let releaseInfoHistory: (() => void) | undefined;
+  function updateInformationLayout() {
+    viewer?.element?.classList.toggle('pswp--gather-info', infoOpen);
+    viewer?.element?.querySelector('.pswp__button--photo-info')?.setAttribute('aria-expanded', String(infoOpen));
+    viewer?.updateSize(true);
+  }
+  function closePhotoInfo() {
+    if (!infoOpen) return;
+    infoOpen = false;
+    const finish = releaseInfoHistory; releaseInfoHistory = undefined; finish?.();
+    updateInformationLayout();
+    viewer?.element?.querySelector<HTMLButtonElement>('.pswp__button--photo-info')?.focus();
+  }
+  async function togglePhotoInfo() {
+    if (infoOpen) { closePhotoInfo(); return; }
+    if (!viewer || !viewedPhoto) return;
+    infoPhoto = viewedPhoto; infoOpen = true;
+    releaseInfoHistory = trackModalHistory(closePhotoInfo);
+    updateInformationLayout();
+    await tick(); viewer?.element?.querySelector<HTMLButtonElement>('.info-close')?.focus();
+  }
+  function viewerInformationKey(event: KeyboardEvent) {
+    if (!viewer || event.ctrlKey || event.metaKey || event.altKey || (event.target instanceof HTMLElement && event.target.matches('input,textarea,[contenteditable=true]'))) return;
+    if ((event.key === 'Escape' && infoOpen) || event.key.toLowerCase() === 'i') {
+      event.preventDefault(); event.stopImmediatePropagation();
+      if (event.key === 'Escape') closePhotoInfo(); else void togglePhotoInfo();
+    }
+  }
   let fastPollingUntil = 0;
   let nextPreviewPoll = 0;
 
@@ -419,6 +451,7 @@
       arrowPrevSVG: viewerIcon(`<path d="${mdiChevronLeft}"/>`),
       arrowNextSVG: viewerIcon(`<path d="${mdiChevronRight}"/>`),
       dataSource: viewable.map((item) => ({ src: mediaUrl(item, 'preview'), msrc: mediaUrl(item, 'thumbnail'), thumbnailSrc: mediaUrl(item, 'thumbnail'), fullSrc: mediaUrl(item, 'fullsize'), width: item.width || 1600, height: item.height || 1200, alt: item.name })),
+      paddingFn: viewport => ({ top: 0, left: 0, right: infoOpen && viewport.x > 760 ? 360 : 0, bottom: infoOpen && viewport.x <= 760 ? Math.min(viewport.y * .72, 660) : 0 }),
       index: viewable.findIndex((item) => item.id === photo.id), bgOpacity: 0.97,
       preload: [1, 1], showHideAnimationType: 'fade', errorMsg: 'Immich has not finished this preview. You can still download the original.',
     });
@@ -432,10 +465,15 @@
         else activeViewer.close();
       });
     });
-    activeViewer.on('close', () => releaseHistory());
-    activeViewer.on('destroy', () => releaseHistory());
+    const releaseViewerHistory = () => { if (viewer === activeViewer) closePhotoInfo(); void settleModalHistory().then(() => releaseHistory()); };
+    activeViewer.on('close', releaseViewerHistory);
+    activeViewer.on('destroy', releaseViewerHistory);
+    const updateInfoPhoto = () => { viewedPhoto = viewable[activeViewer.currIndex] || null; if (infoOpen) infoPhoto = viewedPhoto; };
+    activeViewer.on('change', updateInfoPhoto);
+    activeViewer.on('afterInit', updateInfoPhoto);
     activeViewer.on('destroy', () => { if (viewer === activeViewer) viewer = undefined; });
     activeViewer.on('uiRegister', () => {
+      activeViewer.ui?.registerElement({ name: 'photo-info', order: 12, isButton: true, title: 'Photo information', html: { isCustomSVG: true, size: 24, inner: `<path d="${mdiInformationOutline}"/>` }, onClick: () => { void togglePhotoInfo(); }, onInit: element => element.setAttribute('aria-expanded', 'false') });
       activeViewer.ui?.registerElement({
         name: 'download-original', order: 11, isButton: true, tagName: 'a', title: 'Download original',
         html: { isCustomSVG: true, size: 24, inner: `<path d="${mdiDownload}"/>` },
@@ -445,7 +483,7 @@
         },
       });
       if (!data.readOnly) activeViewer.ui?.registerElement({
-        name: 'delete-photo', order: 12, isButton: true, title: 'Delete photo',
+        name: 'delete-photo', order: 13, isButton: true, title: 'Delete photo',
         html: { isCustomSVG: true, size: 24, inner: `<path d="${mdiTrashCanOutline}"/>` },
         onClick: () => { const current = viewable[activeViewer.currIndex]; if (current && isOwnPhoto(current)) requestDelete([current]); },
         onInit: (element) => {
@@ -677,6 +715,7 @@
   function handleDrop(event: DragEvent) { event.preventDefault(); dragging = false; if (event.dataTransfer?.files) addUploads(event.dataTransfer.files); }
 
   onMount(() => {
+    window.addEventListener('keydown', viewerInformationKey, true);
     void recoverUploads();
     const protectUnsavedUploads = (event: BeforeUnloadEvent) => {
       if (activeUploads && (queueStorageError || uploads.some(item => item.status === 'preparing'))) { event.preventDefault(); event.returnValue = ''; }
@@ -706,9 +745,11 @@
         void loadPhotos();
       }
     }, 7_000);
-    return () => { window.removeEventListener('beforeunload', protectUnsavedUploads); document.removeEventListener('visibilitychange', uploadVisibilityChanged); window.removeEventListener('pageshow', uploadVisibilityChanged); void wakeLock?.release().catch(() => {}); viewport?.removeEventListener('resize', resizeSearchViewport); viewport?.removeEventListener('scroll', resizeSearchViewport); window.removeEventListener('resize', resizeSearchViewport); disposed = true; wakeUploadWorkers(); galleryRequest?.abort(); for (const timer of retryTimers.values()) clearTimeout(timer); retryTimers.clear(); clearInterval(interval); clearTimeout(searchTimer); clearTimeout(dragTimer); viewer?.destroy(); uploads.forEach((item) => { item.controller?.abort(); item.xhr?.abort(); }); };
+    return () => { window.removeEventListener('keydown', viewerInformationKey, true); window.removeEventListener('beforeunload', protectUnsavedUploads); document.removeEventListener('visibilitychange', uploadVisibilityChanged); window.removeEventListener('pageshow', uploadVisibilityChanged); void wakeLock?.release().catch(() => {}); viewport?.removeEventListener('resize', resizeSearchViewport); viewport?.removeEventListener('scroll', resizeSearchViewport); window.removeEventListener('resize', resizeSearchViewport); disposed = true; wakeUploadWorkers(); galleryRequest?.abort(); for (const timer of retryTimers.values()) clearTimeout(timer); retryTimers.clear(); clearInterval(interval); clearTimeout(searchTimer); clearTimeout(dragTimer); viewer?.destroy(); uploads.forEach((item) => { item.controller?.abort(); item.xhr?.abort(); }); };
   });
 </script>
+
+{#if infoOpen && infoPhoto}<PhotoInfo photo={infoPhoto} {base} target={viewer?.element} on:close={closePhotoInfo} />{/if}
 
 <svelte:head><title>{data.collectionName} · Gather</title><meta name="description" content="A shared place for everyone's photos. Upload to your own folder and download the moments you love." /></svelte:head>
 <svelte:window on:click={dismissSearch} on:keydown={searchKeydown} on:online={resumeUploads} on:dragover={handleDrag} on:drop={handleDrop} />

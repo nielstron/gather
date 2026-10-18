@@ -80,7 +80,7 @@ test.beforeAll(async () => {
         const items = paths.filter((original: string) => indexed.has(original)).map((originalPath: string) => {
           const id = indexed.get(originalPath)!;
           const name = originalPath.split('/').at(-1)!;
-          const person = name === 'weekend-0.jpg' ? { id: '11111111-1111-4111-8111-111111111111', name: 'Alice face' } : { id: '22222222-2222-4222-8222-222222222222', name: 'Bob face' };
+          const person = name === 'weekend-0.jpg' || name.startsWith('info-') ? { id: '11111111-1111-4111-8111-111111111111', name: 'Alice face' } : { id: '22222222-2222-4222-8222-222222222222', name: 'Bob face' };
           return { id, originalPath, libraryId, ...dimensions.get(id), thumbhash: 'ready', ...(name === 'old-capture-new-upload.jpg' ? { localDateTime: '2020-01-01T04:00:00.000Z', exifInfo: { dateTimeOriginal: '2020-01-01T12:00:00Z' } } : {}), people: [person], city: name === 'weekend-0.jpg' ? 'Paris' : 'Berlin' };
         });
         let matches = items.filter((item: any) => {
@@ -94,6 +94,13 @@ test.beforeAll(async () => {
         if (body.query?.includes('no-such-photo')) matches = [];
         if (request.url === '/api/search/smart') matches = matches.reverse().slice(0, body.size);
         response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ assets: { items: matches, nextCursor: null } })); return;
+      }
+      if (/^\/api\/people\/[^/]+\/thumbnail$/.test(request.url || '')) { response.writeHead(200, { 'content-type': 'image/png' }).end(importImage); return; }
+      const detailId = request.url?.match(/^\/api\/assets\/([^/?]+)$/)?.[1];
+      if (detailId) {
+        const original = [...indexed].find(([,id]) => id === detailId)?.[0];
+        if (!original) { response.writeHead(404).end(); return; }
+        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ id: detailId, originalPath: original, libraryId, ...dimensions.get(detailId), thumbhash: 'ready', localDateTime: '2024-01-03T14:20:00Z', originalMimeType: 'image/jpeg', exifInfo: { make: 'Google', model: 'Pixel 9', lensModel: 'Main camera', fNumber: 1.7, focalLength: 6.9, iso: 100, exposureTime: '1/120', description: 'A weekend together', city: 'Paris', state: 'Île-de-France', country: 'France', latitude: 0, longitude: 0 }, people: [{ id: '11111111-1111-4111-8111-111111111111', name: 'Alice face' }], tags: [{ value: 'Weekend' }] })); return;
       }
       const id = request.url?.match(/^\/api\/assets\/([^/]+)\/thumbnail\?size=(thumbnail|preview|fullsize)$/)?.[1];
       if (id && images.has(id)) {
@@ -825,10 +832,10 @@ test('search tools stay in view after scrolling and people remain usable while p
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   let portraitsRequested = false;
-  await page.route('**/api/search/people?faces=1', async route => {
+  await page.route('**/api/search/people/*/thumbnail', async route => {
     portraitsRequested = true;
     await gate;
-    await route.fulfill({ json: { people: [] } });
+    await route.fulfill({ contentType: 'image/png', body: importImage });
   });
   try {
     for (const width of [1280, 390]) {
@@ -1377,5 +1384,90 @@ test('contributors confirm individual and bulk deletion while other contributors
   expect(await readFile(path.join(root, 'Another contributor/their.png'))).toEqual(importImage);
   await expect.poll(() => page.evaluate(() => !(history.state?.['sveltekit:states']?.modalIds?.length))).toBe(true);
   await page.goBack(); await expect(page).toHaveURL(previous);
+  expect(errors).toEqual([]);
+});
+
+test('photo information uses Immich metadata, follows the viewer, and closes with Back on desktop and mobile', async ({ page, request }, testInfo) => {
+  const settings = await import('../src/lib/server/settings');
+  const auth = await import('../src/lib/server/auth');
+  const root = path.join(directory, 'photos', 'info-gallery');
+  await mkdir(root, { recursive: true });
+  const collectionId = settings.createCollection({ ...settings.readSettings(), photoRoot: root, readOnly: false, collectionName: 'Info test', immichUrl: immichOrigin, immichApiKey: 'test-preview-key', immichScanApiKey: 'test-scan-key', immichLibraryId: libraryId, immichPhotoRoot: '/external/gather/info-gallery' });
+  const invitation = await settings.withSettings(() => auth.createMember('Info owner'), collectionId);
+  for (const [index, name] of ['info-one.jpg', 'info-two.jpg', 'info-three.jpg'].entries()) {
+    const relative = `${invitation.member.folder}/${name}`, assetId = `55555555-2222-4111-8111-${String(index + 1).padStart(12, '0')}`;
+    const image = await sharp({ create: { width: 900, height: 600, channels: 3, background: ['#426a82', '#b49256', '#82426a'][index] } }).jpeg().toBuffer();
+    await writeFile(path.join(root, relative), image);
+    indexed.set(`/external/gather/info-gallery/${relative}`, assetId); images.set(assetId, image); dimensions.set(assetId, { width: 900, height: 600 });
+  }
+  const base = `${origin}${basePath}/c/${collectionId}`;
+  const photoId = Buffer.from(`${invitation.member.folder}/info-one.jpg`).toString('base64url');
+  expect((await request.get(`${base}/api/photos/${photoId}/info`)).status()).toBe(401);
+  await page.route('https://www.openstreetmap.org/export/embed.html**', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Map</title><p>Location map</p>' }));
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  let infoRequests = 0;
+  page.on('request', request => { if (/\/api\/photos\/[^/]+\/info$/.test(request.url())) infoRequests++; });
+  await page.goto(`${origin}${basePath}/api/health`);
+  await page.goto(`${base}/#invite=${invitation.token}`);
+  await expect(page.locator('.photo-tile')).toHaveCount(3);
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    const before = infoRequests;
+    await page.locator('.photo-tile .photo-open').first().click();
+    await expect(page.locator('.pswp')).toBeVisible(); expect(infoRequests).toBe(before);
+    await expect.poll(() => page.locator('.pswp__item').evaluateAll(items => items.every(item => getComputedStyle(item).display !== 'none'))).toBe(true);
+    const trigger = page.getByRole('button', { name: 'Photo information', exact: true });
+    await trigger.click();
+    const panel = page.getByRole('complementary', { name: 'Photo information', exact: true });
+    await expect(panel).toBeVisible();
+    await expect(panel).toContainText('Google Pixel 9');
+    await expect(panel).toContainText('ƒ/1.7 · 1/120 s · 6.9 mm · ISO 100');
+    await expect(panel).toContainText('A weekend together');
+    await expect(panel).toContainText('0.00000, 0.00000');
+    await expect(panel).toContainText('Alice face'); await expect(panel).toContainText('Weekend');
+    const portrait = await page.request.get(`${base}/api/search/people/11111111-1111-4111-8111-111111111111/thumbnail`);
+    expect(portrait.status()).toBe(200);
+    expect(portrait.headers()['cache-control']).toBe('private, max-age=60');
+    await panel.locator('.info-person').first().scrollIntoViewIfNeeded();
+    await expect.poll(() => panel.locator('.info-person img').first().evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+    await panel.locator('.info-content').evaluate(element => element.scrollTo({ top: 0 }));
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    const bounds = await panel.boundingBox(); expect(bounds!.width).toBeLessThanOrEqual(width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    if (width > 760) {
+      const toolbar = await page.locator('.pswp__top-bar').boundingBox();
+      expect(toolbar!.x + toolbar!.width).toBeLessThanOrEqual(bounds!.x);
+    }
+    const caption = await page.locator('.pswp__photo-caption').textContent();
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('.pswp__photo-caption')).not.toHaveText(caption!);
+    const name = (await page.locator('.pswp__photo-caption').textContent())!.split(' · ')[0];
+    await expect(panel).toContainText(name);
+    await expect(panel).toContainText('Google Pixel 9');
+    await page.screenshot({ path: testInfo.outputPath(`information-${width}.png`) });
+    await page.goBack(); await expect(panel).not.toBeVisible(); await expect(page.locator('.pswp')).toBeVisible();
+    await page.keyboard.press('i'); await expect(panel).toBeVisible();
+    await page.keyboard.press('Escape'); await expect(panel).not.toBeVisible(); await expect(page.locator('.pswp')).toBeVisible();
+    await page.keyboard.press('i'); await expect(panel).toBeVisible();
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(panel).not.toBeVisible(); await expect(page.locator('.pswp')).not.toBeVisible();
+    await expect.poll(() => page.evaluate(() => !(history.state?.['sveltekit:states']?.modalIds?.length))).toBe(true);
+  }
+  let failInformation = true;
+  await page.route('**/api/photos/*/info', route => failInformation ? route.fulfill({ json: { state: 'unavailable' } }) : route.continue());
+  await page.locator('.photo-tile .photo-open').first().click();
+  await expect.poll(() => page.locator('.pswp__item').evaluateAll(items => items.every(item => getComputedStyle(item).display !== 'none'))).toBe(true);
+  await page.getByRole('button', { name: 'Photo information', exact: true }).click();
+  const retryPanel = page.getByRole('complementary', { name: 'Photo information', exact: true });
+  await expect(retryPanel).toContainText('temporarily unavailable');
+  await expect(retryPanel).toContainText('Info owner');
+  failInformation = false;
+  await retryPanel.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(retryPanel).toContainText('Google Pixel 9');
+  await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+  await expect(page.locator('.pswp')).not.toBeVisible();
+  const forbidden = Buffer.from('../secret.jpg').toString('base64url');
+  expect((await page.request.get(`${base}/api/photos/${forbidden}/info`)).status()).toBe(400);
+  expect((await page.request.get(`${base}/api/search/people/99999999-2222-4111-8111-111111111111/thumbnail`)).status()).toBe(404);
   expect(errors).toEqual([]);
 });

@@ -47,7 +47,7 @@ export function operators(field: SearchField): string[] {
 }
 export type SearchBranch = Record<string, Record<string, unknown>>;
 export type CollectionSearch = { mode: 'semantic' | 'filename' | 'metadata'; filter?: Record<string, unknown>; language?: string; queryAssetId?: string; withStacked?: boolean; resultLimit?: number; orderBy?: { field: string; direction: 'asc' | 'desc' } };
-export type SearchPerson = { id: string; name: string; photoId: string; revision?: string; count: number; face?: { imageWidth: number; imageHeight: number; boundingBoxX1: number; boundingBoxY1: number; boundingBoxX2: number; boundingBoxY2: number } };
+export type SearchPerson = { id: string; name: string; photoId: string; revision?: string; count: number };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function invalid(message = 'Invalid search filter'): never { throw Object.assign(new Error(message), { status: 400 }); }
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }

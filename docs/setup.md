@@ -57,7 +57,7 @@ IMMICH_SCAN_API_KEY=your-admin-scan-api-key
 IMMICH_ALLOWED_ROOT=/external/photos
 ```
 
-The preview/search key needs `asset.read` and `asset.view`; add `face.read` for face crops. The scan key must belong to an administrator and have `library.update`. If omitted, Gather tries the preview key for scanning. Keys stay on the server.
+The integration key needs `asset.read`, `asset.view`, `asset.download`, `person.read`, `face.read`, `person.statistics`, and `library.read` for metadata, search, portraits, and image conversions. The scan key must belong to an administrator and have `library.update`. If omitted, Gather tries the integration key for scanning. Keys stay on the server.
 
 Gather and Immich must see the same originals, although their container paths may differ. Compose mounts `GATHER_FOLDER_ROOT` at `/photos` inside Gather. `IMMICH_ALLOWED_ROOT` maps that root inside Immich so choosing collection folders can derive their paths automatically. `localhost` inside Gather's container refers to Gather, not Immich; use a shared Docker network or a reachable HTTPS address.
 

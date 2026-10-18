@@ -23,3 +23,28 @@ export type PhotoList = {
   hasMore: boolean;
   previewService: 'ready' | 'unconfigured' | 'unavailable';
 };
+
+export type PhotoMetadata = {
+  description?: string;
+  takenAt?: string;
+  timeZone?: string;
+  make?: string;
+  model?: string;
+  lensModel?: string;
+  fNumber?: number;
+  focalLength?: number;
+  iso?: number;
+  exposureTime?: string;
+  latitude?: number;
+  longitude?: number;
+  city?: string;
+  state?: string;
+  country?: string;
+  rating?: number;
+  width?: number;
+  height?: number;
+  mimeType?: string;
+  people: { id: string; name: string }[];
+  tags: string[];
+};
+export type PhotoInformation = { state: 'ready' | 'pending' | 'unconfigured' | 'unavailable'; metadata?: PhotoMetadata };

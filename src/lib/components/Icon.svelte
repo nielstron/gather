@@ -1,8 +1,11 @@
 <script lang="ts">
-  import { mdiFilterVariant, mdiViewGrid, mdiImageOutline, mdiUpload, mdiDownload, mdiFolderOutline, mdiMagnify, mdiChevronRight, mdiClose, mdiCheck, mdiSelectAll, mdiTrashCanOutline, mdiSelectOff, mdiAccountMinusOutline, mdiCheckboxIntermediate, mdiRefresh, mdiSort, mdiSortAscending, mdiSortDescending, mdiLogout, mdiLockOutline, mdiAccountOutline, mdiAccountGroupOutline, mdiClockOutline, mdiInformationOutline, mdiArrowRight, mdiAutoFix } from '@mdi/js';
+  import { mdiCameraOutline, mdiStarOutline, mdiOpenInNew, mdiFilterVariant, mdiViewGrid, mdiImageOutline, mdiUpload, mdiDownload, mdiFolderOutline, mdiMagnify, mdiChevronRight, mdiClose, mdiCheck, mdiSelectAll, mdiTrashCanOutline, mdiSelectOff, mdiAccountMinusOutline, mdiCheckboxIntermediate, mdiRefresh, mdiSort, mdiSortAscending, mdiSortDescending, mdiLogout, mdiLockOutline, mdiAccountOutline, mdiAccountGroupOutline, mdiClockOutline, mdiInformationOutline, mdiArrowRight, mdiAutoFix } from '@mdi/js';
   export let name = 'grid';
   export let size = 20;
   const paths: Record<string, string> = {
+    'camera': mdiCameraOutline,
+    'star': mdiStarOutline,
+    'external': mdiOpenInNew,
     'filter': mdiFilterVariant,
     'grid': mdiViewGrid,
     'image': mdiImageOutline,
