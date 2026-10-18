@@ -74,6 +74,8 @@
   let uploadOptions: ImportPhotos;
   let downloadOptions: DownloadPhotos;
   let uploads: Upload[] = [];
+  let uploadCompletions = 0;
+  let retryingAll = false;
   let uploadPanelOpen = true;
   let uploadPanelHeight = 0;
   let uploading = false;
@@ -142,6 +144,7 @@
   $: photoIndexes = new Map(sortedPhotos.map((photo, index) => [photo.id, index]));
   $: timelineGroups = groupTimeline(sortedPhotos, galleryWidth, searchOrder ? 'name' : sort);
   $: completedUploads = uploads.filter((upload) => upload.status === 'done').length;
+  $: retryableUploads = uploads.filter(item => ['error', 'cancelled', 'retrying'].includes(item.status) && item.file.size <= data.maxUploadBytes).length;
   $: activeUploads = uploads.filter((upload) => upload.status === 'preparing' || upload.status === 'waiting' || upload.status === 'checking' || upload.status === 'uploading' || upload.status === 'retrying').length;
   $: totalFolderPhotos = folders.reduce((sum, entry) => sum + entry.count, 0);
 
@@ -407,6 +410,7 @@
   }
 
   function updateUpload(id: string, patch: Partial<Upload>) {
+    if (patch.status === 'done' && uploads.some(item => item.id === id && item.status !== 'done')) uploadCompletions++;
     uploads = uploads.map((item) => item.id === id ? { ...item, ...patch } : item);
     wakeUploadWorkers();
     if (!queueScope) return;
@@ -452,7 +456,7 @@
   async function processUploads() {
     if (uploading || restoringUploads || disposed || !data.user || !uploads.some(item => item.status === 'waiting')) return;
     uploading = true;
-    const completedBefore = uploads.filter((entry) => entry.status === 'done').length;
+    const completedBefore = uploadCompletions;
     await Promise.all(Array.from({ length: 2 }, async () => {
       while (!disposed && uploads.some((item) => item.status === 'waiting' || item.status === 'preparing')) {
         const item = uploads.find((entry) => entry.status === 'waiting');
@@ -552,7 +556,7 @@
       }
     }));
     uploading = false;
-    if (uploads.filter((entry) => entry.status === 'done').length > completedBefore) {
+    if (uploadCompletions > completedBefore) {
       fastPollingUntil = Date.now() + 120_000;
       nextPreviewPoll = 0;
       if (!disposed) await loadPhotos();
@@ -566,6 +570,19 @@
     try { await saveQueuedUpload(queueScope, id, item.file); } catch { queueStorageError = true; }
     if (disposed || uploads.find(entry => entry.id === id)?.status === 'cancelled') return;
     updateUpload(id, { status: 'waiting', checksum: item.checksum }); void processUploads();
+  }
+  function clearSuccessfulUploads() {
+    for (const item of uploads.filter(item => item.status === 'done')) void removeQueuedUpload(queueScope, item.id).catch(() => {});
+    uploads = uploads.filter(item => item.status !== 'done');
+  }
+  async function retryAllUploads() {
+    if (retryingAll) return;
+    retryingAll = true;
+    try {
+      const items = uploads.filter(item => ['error', 'cancelled', 'retrying'].includes(item.status) && item.file.size <= data.maxUploadBytes);
+      for (const item of items) { clearTimeout(retryTimers.get(item.id)); retryTimers.delete(item.id); }
+      await mapConcurrent(items, 2, retryUpload);
+    } finally { retryingAll = false; }
   }
   function dismissUploads() {
     for (const item of uploads) {
@@ -740,6 +757,6 @@
     <button class="text-button profile-sign-out" on:click={signOut} disabled={savingProfile}><Icon name="logout" size={17} />Sign out</button>
   </dialog>
   {#if dragging}<div class="drop-overlay"><div><span class="drop-icon"><Icon name="upload" size={42} /></span><h2>Drop your moments here</h2><p>Uploading to <strong>{data.user.name}’s folder</strong></p><span>Everyone in the collection can view and download them.</span></div></div>{/if}
-  {#if uploads.length}<section class="upload-panel" bind:clientHeight={uploadPanelHeight} aria-label="Upload progress" aria-live="polite"><header><span class="upload-panel-icon"><Icon name={activeUploads ? 'upload' : 'check'} size={19} /></span><div><strong>{activeUploads ? `Uploading ${uploads.length - completedUploads} ${uploads.length - completedUploads === 1 ? 'photo' : 'photos'}` : `${completedUploads} of ${uploads.length} finished${uploads.some(item => item.duplicate) ? ` · ${uploads.filter(item => item.duplicate).length} skipped` : ''}`}</strong><span><Icon name="folder" size={12} /> Folder: {data.user.folder}/</span></div><button class="icon-button" on:click={() => { uploadPanelOpen = !uploadPanelOpen; }} aria-label={uploadPanelOpen ? 'Minimize uploads' : 'Expand uploads'}><span>{uploadPanelOpen ? '−' : '+'}</span></button>{#if !activeUploads}<button class="icon-button" on:click={dismissUploads} aria-label="Close uploads"><Icon name="close" size={17} /></button>{/if}</header>{#if activeUploads}<p class="upload-reminder"><Icon name="info" size={16} /><span>Keep this tab open and visible until uploads finish.</span></p>{/if}{#if uploadPanelOpen}<div class="upload-list">{#each uploads as item (item.id)}<div class="upload-row"><span class="upload-file-icon"><Icon name="image" size={21} /></span><div class="upload-item-body"><strong>{item.file.name}</strong><span class:error-text={item.status === 'error'}>{item.status === 'done' ? item.duplicate ? 'Already in collection · skipped' : 'Saved · Immich preview processing' : item.status === 'preparing' ? 'Preparing upload…' : item.status === 'checking' ? 'Checking for duplicates…' : item.status === 'uploading' ? item.progress === 100 ? 'Saving photo…' : `${item.progress}% · ${bytes(item.file.size)}` : item.status === 'error' || item.status === 'retrying' ? item.error : item.status === 'cancelled' ? 'Cancelled' : 'Waiting to upload'}</span>{#if item.status === 'uploading'}<div class="upload-progress"><div style:width={`${item.progress}%`}></div></div>{/if}</div>{#if item.status === 'done'}<span class="upload-success"><Icon name="check" size={18} /></span>{:else if item.status === 'error' || item.status === 'cancelled'}<button class="icon-button" on:click={() => retryUpload(item)} disabled={item.file.size > data.maxUploadBytes} aria-label={`Retry ${item.file.name}`}><Icon name="refresh" size={16} /></button>{:else}<button class="icon-button" on:click={() => cancelUpload(item)} aria-label={`Cancel ${item.file.name}`}><Icon name="close" size={16} /></button>{/if}</div>{/each}</div><footer>{activeUploads ? queueStorageError ? 'Browser recovery storage is unavailable.' : 'Uploads resume when you return.' : 'Shared with everyone in this collection.'}</footer>{/if}</section>{/if}
+  {#if uploads.length}<section class="upload-panel" bind:clientHeight={uploadPanelHeight} aria-label="Upload progress" aria-live="polite"><header><span class="upload-panel-icon"><Icon name={activeUploads ? 'upload' : 'check'} size={19} /></span><div><strong>{activeUploads ? `Uploading ${uploads.length - completedUploads} ${uploads.length - completedUploads === 1 ? 'photo' : 'photos'}` : `${completedUploads} of ${uploads.length} finished${uploads.some(item => item.duplicate) ? ` · ${uploads.filter(item => item.duplicate).length} skipped` : ''}`}</strong><span><Icon name="folder" size={12} /> Folder: {data.user.folder}/</span></div><button class="icon-button" on:click={() => { uploadPanelOpen = !uploadPanelOpen; }} aria-label={uploadPanelOpen ? 'Minimize uploads' : 'Expand uploads'}><span>{uploadPanelOpen ? '−' : '+'}</span></button>{#if !activeUploads}<button class="icon-button" on:click={dismissUploads} aria-label="Close uploads"><Icon name="close" size={17} /></button>{/if}</header>{#if activeUploads}<p class="upload-reminder"><Icon name="info" size={16} /><span>Keep this tab open and visible until uploads finish.</span></p>{/if}{#if uploadPanelOpen}<div class="upload-list">{#each uploads as item (item.id)}<div class="upload-row"><span class="upload-file-icon"><Icon name="image" size={21} /></span><div class="upload-item-body"><strong>{item.file.name}</strong><span class:error-text={item.status === 'error'}>{item.status === 'done' ? item.duplicate ? 'Already in collection · skipped' : 'Saved · Immich preview processing' : item.status === 'preparing' ? 'Preparing upload…' : item.status === 'checking' ? 'Checking for duplicates…' : item.status === 'uploading' ? item.progress === 100 ? 'Saving photo…' : `${item.progress}% · ${bytes(item.file.size)}` : item.status === 'error' || item.status === 'retrying' ? item.error : item.status === 'cancelled' ? 'Cancelled' : 'Waiting to upload'}</span>{#if item.status === 'uploading'}<div class="upload-progress"><div style:width={`${item.progress}%`}></div></div>{/if}</div>{#if item.status === 'done'}<span class="upload-success"><Icon name="check" size={18} /></span>{:else if item.status === 'error' || item.status === 'cancelled'}<button class="icon-button" on:click={() => retryUpload(item)} disabled={item.file.size > data.maxUploadBytes} aria-label={`Retry ${item.file.name}`}><Icon name="refresh" size={16} /></button>{:else}<button class="icon-button" on:click={() => cancelUpload(item)} aria-label={`Cancel ${item.file.name}`}><Icon name="close" size={16} /></button>{/if}</div>{/each}</div>{/if}<footer class="upload-actions"><button type="button" class="text-button" on:click={clearSuccessfulUploads} disabled={!completedUploads}><Icon name="check" size={16} />Clear successful</button><button type="button" class="text-button" on:click={retryAllUploads} disabled={!retryableUploads || retryingAll}><Icon name="refresh" size={16} />Retry all</button></footer>{#if queueStorageError && activeUploads}<p class="upload-storage-warning" role="status">Browser recovery storage is unavailable. Keep this tab open.</p>{/if}</section>{/if}
   <dialog use:modalHistory class="pending-dialog" bind:this={pendingDialog}><button class="icon-button dialog-close" on:click={() => pendingDialog.close()} aria-label="Close photo details"><Icon name="close" /></button>{#if pendingPhoto}<div class="dialog-image"><Icon name="image" size={52} /></div><Badge size="small" color="secondary">Original safely stored</Badge><h2>{pendingPhoto.name}</h2><p>{pendingPhoto.previewStatus === 'pending' ? 'Immich is preparing this photo’s preview. The original is already yours to enjoy.' : 'The Immich preview is currently unavailable. You can still download the original photo.'}</p><div class="dialog-metadata"><span>Shared by {pendingPhoto.owner}</span><span>{bytes(pendingPhoto.bytes)}</span></div><a class="primary-button button-link" href={mediaUrl(pendingPhoto, 'original')} download={pendingPhoto.name}><Icon name="download" size={18} />Download original</a>{/if}</dialog>
 {/if}

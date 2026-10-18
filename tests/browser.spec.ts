@@ -432,6 +432,37 @@ test('offline uploads resume when the connection returns', async ({ page, contex
   expect((await readFile(path.join(directory, 'photos', 'offline-retry', 'offline-retry.png'))).equals(payload)).toBe(true);
 });
 
+test('upload actions clear only successes and retry all failed photos together', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const person = auth.createMember('Upload actions', 'upload-actions');
+  const session = auth.exchangeInvite(person.token)!;
+  await page.context().addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
+  let failing = true;
+  await page.route('**/api/upload', async route => {
+    if (failing && decodeURIComponent(route.request().headers()['x-filename']) !== 'successful.png') return route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: 'Please retry this photo.' }) });
+    await route.continue();
+  });
+  await page.goto(`${origin}${basePath}/`);
+  const files = await Promise.all(['successful', 'failed', 'another-failed'].map(async (name, index) => ({ name: `${name}.png`, mimeType: 'image/png', buffer: await sharp({ create: { width: 36 + index, height: 39, channels: 3, background: ['#8b2c21', '#218b62', '#215b8b'][index] } }).png().toBuffer() })));
+  await page.locator('input[type="file"]').setInputFiles(files);
+  const panel = page.getByRole('region', { name: 'Upload progress' });
+  await expect(panel).toContainText('1 of 3 finished');
+  await panel.getByRole('button', { name: 'Minimize uploads' }).click();
+  await expect(panel.getByRole('button', { name: 'Clear successful', exact: true })).toBeVisible();
+  await panel.getByRole('button', { name: 'Clear successful', exact: true }).click();
+  await panel.getByRole('button', { name: 'Expand uploads' }).click();
+  await expect(panel).not.toContainText('successful.png');
+  await expect(panel).toContainText('failed.png');
+  await expect(panel).toContainText('another-failed.png');
+  failing = false;
+  await panel.getByRole('button', { name: 'Retry all', exact: true }).click();
+  await expect(panel).toContainText('2 of 2 finished');
+  await expect(panel.getByRole('button', { name: 'Retry all', exact: true })).toBeDisabled();
+  await panel.getByRole('button', { name: 'Clear successful', exact: true }).click();
+  await expect(panel).not.toBeVisible();
+  expect((await readdir(path.join(directory, 'photos', 'upload-actions'))).filter(name => !name.startsWith('.')).sort()).toEqual(['another-failed.png', 'failed.png', 'successful.png']);
+});
+
 test('automatic retries stop after five retries and permanent errors do not retry', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
   const invitation = auth.createMember('Retry limit', 'retry-limit');

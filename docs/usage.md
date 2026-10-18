@@ -16,6 +16,8 @@ Choose **Upload photos**, then **Upload from storage** or **Import from link**. 
 
 Uploads check SHA-256 before transferring data. Identical contents anywhere in the collection are skipped, even under another filename. Different files with the same filename get a suffix; existing photos are never overwritten.
 
+**Clear successful** removes finished and skipped entries from the upload panel without deleting photos. **Retry all** restarts failed or cancelled uploads and pending retries. Both buttons stay available when the panel is minimized.
+
 Keep the tab open and visible until uploads finish. The browser saves its queue locally and retries interrupted connections. Files larger than 1 MiB resume from saved 1 MiB chunks. Phones can suspend background websites, so transfers resume when you return. Clearing browser storage can remove the saved queue.
 
 For Google Photos, paste a public album link, choose **Preview album**, then start the import. Imports continue on the server after closing the dialog or browser. Cancel stops remaining work; retry keeps completed photos. Repeated imports skip existing content. Sign-in-only albums and videos are unsupported; albums are limited to 1,000 items. Google supplies the downloadable copies, which may differ from camera originals.
