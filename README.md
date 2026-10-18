@@ -1,6 +1,8 @@
 # Gather
 
-Self-hosted photo sharing for trips and small groups. Everyone adds their photos to one collection and downloads the originals they want. Your files stay in ordinary folders; [Immich](https://immich.app/) supplies previews and search.
+Self-hosted photo sharing based on immich. Similar to Google Photos Album sharing but storing original files on a server of your choice and separating contributors.
+
+Everyone adds their photos to one collection and downloads the photos they want. Your files stay in ordinary folders; [Immich](https://immich.app/) supplies previews and search.
 
 ![Gather gallery with a shared road-trip collection](docs/screenshots/gallery.jpg)
 
