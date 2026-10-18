@@ -320,3 +320,121 @@ test('two uploads start together instead of waiting for each other', async ({ pa
     return result.photos.filter((photo: { name: string }) => photo.name.startsWith('parallel-')).length;
   }).toBe(2);
 });
+
+test('interrupted uploads retry automatically and a lost success response does not duplicate the file', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invitation = auth.createMember('Retry uploads', 'retry-uploads');
+  await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
+  await expect(page.locator('.photo-tile').first()).toBeVisible();
+  const payload = await sharp({ create: { width: 20, height: 20, channels: 3, background: '#476a81' } }).png().toBuffer();
+  const identifiers: string[] = [];
+  let attempts = 0;
+  await page.route('**/api/upload', async route => {
+    identifiers.push(route.request().headers()['x-upload-id']);
+    attempts++;
+    if (attempts === 1) { await route.abort(); return; }
+    if (attempts === 2) {
+      const saved = await route.fetch();
+      expect(saved.status()).toBe(201);
+      await route.abort(); // The file exists, but its success response is lost.
+      return;
+    }
+    await route.continue();
+  });
+  await page.locator('input[type="file"]').setInputFiles({ name: 'automatic-retry.png', mimeType: 'image/png', buffer: payload });
+  await expect(page.locator('.upload-panel')).toContainText('Retrying automatically');
+  await expect(page.locator('.upload-panel')).toContainText('Saved · Immich preview processing', { timeout: 15_000 });
+  expect(attempts).toBe(3);
+  expect(new Set(identifiers).size).toBe(1);
+  expect((await readdir(path.join(directory, 'photos', 'retry-uploads'))).filter(name => !name.startsWith('.'))).toEqual(['automatic-retry.png']);
+  expect((await readFile(path.join(directory, 'photos', 'retry-uploads', 'automatic-retry.png'))).equals(payload)).toBe(true);
+  const collision = await page.request.post(`${origin}${basePath}/api/upload`, { headers: { origin, 'x-filename': 'other.png', 'x-upload-id': identifiers[0], 'x-upload-size': String(payload.length), 'content-type': 'image/png' }, data: payload });
+  expect(collision.status()).toBe(409);
+  const duplicateHeaders = { origin, 'x-filename': 'concurrent-retry.png', 'x-upload-id': 'concurrent-retry-identifier', 'x-upload-size': String(payload.length), 'content-type': 'image/png' };
+  const concurrent = await Promise.all([0, 1].map(() => page.request.post(`${origin}${basePath}/api/upload`, { headers: duplicateHeaders, data: payload })));
+  expect(concurrent.map(response => response.status()).sort()).toEqual([200, 201]);
+  expect((await readdir(path.join(directory, 'photos', 'retry-uploads'))).filter(name => name.startsWith('concurrent-retry'))).toEqual(['concurrent-retry.png']);
+});
+
+test('a queued automatic retry can be cancelled', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invitation = auth.createMember('Cancel retry', 'cancel-retry');
+  await page.clock.install();
+  await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
+  await expect(page.locator('.photo-tile').first()).toBeVisible();
+  let attempts = 0;
+  await page.route('**/api/upload', route => {
+    attempts++;
+    return route.fulfill({ status: 503, headers: { 'retry-after': '60' }, contentType: 'application/json', body: JSON.stringify({ error: 'Temporary outage.' }) });
+  });
+  await page.locator('input[type="file"]').setInputFiles({ name: 'cancel-retry.png', mimeType: 'image/png', buffer: Buffer.from('test') });
+  await expect(page.locator('.upload-panel')).toContainText('Retrying automatically');
+  await page.getByRole('button', { name: 'Cancel cancel-retry.png', exact: true }).click();
+  await page.clock.fastForward(120_000);
+  await expect(page.locator('.upload-panel')).toContainText('Cancelled');
+  expect(attempts).toBe(1);
+});
+
+test('offline uploads resume when the connection returns', async ({ page, context }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invitation = auth.createMember('Offline retry', 'offline-retry');
+  await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
+  await expect(page.locator('.photo-tile').first()).toBeVisible();
+  const payload = await sharp({ create: { width: 20, height: 20, channels: 3, background: '#476a81' } }).png().toBuffer();
+  await context.setOffline(true);
+  await page.locator('input[type="file"]').setInputFiles({ name: 'offline-retry.png', mimeType: 'image/png', buffer: payload });
+  await expect(page.locator('.upload-panel')).toContainText('Waiting for connection');
+  await context.setOffline(false);
+  await expect(page.locator('.upload-panel')).toContainText('Saved · Immich preview processing');
+  expect((await readFile(path.join(directory, 'photos', 'offline-retry', 'offline-retry.png'))).equals(payload)).toBe(true);
+});
+
+test('automatic retries stop after five retries and permanent errors do not retry', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invitation = auth.createMember('Retry limit', 'retry-limit');
+  await page.clock.install();
+  await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
+  await expect(page.locator('.photo-tile').first()).toBeVisible();
+  let attempts = 0;
+  await page.route('**/api/upload', route => { attempts++; return route.fulfill({ status: 503, body: '{}' }); });
+  await page.locator('input[type="file"]').setInputFiles({ name: 'retry-limit.png', mimeType: 'image/png', buffer: Buffer.from('test') });
+  await expect.poll(() => attempts).toBe(1);
+  for (let retry = 0; retry < 5; retry++) {
+    await expect(page.locator('.upload-panel')).toContainText('Retrying automatically');
+    await page.clock.fastForward(1000 * 2 ** retry + 1);
+    await expect.poll(() => attempts).toBe(retry + 2);
+  }
+  await expect(page.locator('.upload-panel')).toContainText('Automatic retries exhausted');
+  await page.clock.fastForward(120_000);
+  expect(attempts).toBe(6);
+  await page.unroute('**/api/upload');
+  await page.route('**/api/upload', route => { attempts++; return route.fulfill({ status: 415, contentType: 'application/json', body: JSON.stringify({ error: 'Invalid image.' }) }); });
+  await page.locator('input[type="file"]').setInputFiles({ name: 'invalid.png', mimeType: 'image/png', buffer: Buffer.from('test') });
+  await expect(page.locator('.upload-panel')).toContainText('Invalid image.');
+  await page.clock.fastForward(120_000);
+  expect(attempts).toBe(7);
+});
+
+test('a stalled transfer retries after its inactivity timeout', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invitation = auth.createMember('Stalled retry', 'stalled-retry');
+  await page.clock.install();
+  await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
+  await expect(page.locator('.photo-tile').first()).toBeVisible();
+  const payload = await sharp({ create: { width: 20, height: 20, channels: 3, background: '#476a81' } }).png().toBuffer();
+  let attempts = 0;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/upload', async route => {
+    if (++attempts === 1) { await gate; await route.abort().catch(() => {}); }
+    else await route.continue();
+  });
+  await page.locator('input[type="file"]').setInputFiles({ name: 'stalled-retry.png', mimeType: 'image/png', buffer: payload });
+  await expect.poll(() => attempts).toBe(1);
+  await page.clock.fastForward(90_001);
+  await expect(page.locator('.upload-panel')).toContainText('Connection timed out. Retrying automatically');
+  release();
+  await page.clock.fastForward(1001);
+  await expect(page.locator('.upload-panel')).toContainText('Saved · Immich preview processing');
+  expect(attempts).toBe(2);
+});

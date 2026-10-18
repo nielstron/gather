@@ -3,7 +3,7 @@ import { chmodSync, lstatSync, mkdirSync, readdirSync, rmdirSync } from 'node:fs
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { config } from './config';
-import type { Member } from '../types';
+import type { Member, Photo } from '../types';
 
 let database: Database.Database | undefined;
 const tokenPattern = /^[A-Za-z0-9_-]{43}$/;
@@ -36,6 +36,13 @@ function db() {
     );
     CREATE INDEX IF NOT EXISTS sessions_member_id ON sessions(member_id);
     CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
+    CREATE TABLE IF NOT EXISTS upload_receipts (
+      scope TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      photo TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS upload_receipts_created ON upload_receipts(created_at);
     CREATE TABLE IF NOT EXISTS shared_link (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       token_hash TEXT,
@@ -254,4 +261,24 @@ export function accessOverview() {
     sharedLinkActive: !!db().prepare('SELECT id FROM shared_link WHERE id = 1 AND token_hash IS NOT NULL').get(),
     members: db().prepare('SELECT id, name, folder, active, shared FROM members ORDER BY name COLLATE NOCASE').all()
   };
+}
+
+
+const receiptLifetime = 7 * 86400_000;
+export function uploadScope(member: Member, key: string) {
+  return hash(JSON.stringify([config.photoRoot, member.id, member.folder, key]));
+}
+
+export function readUploadReceipt(scope: string, fingerprint: string): Photo | null {
+  const receipt = db().prepare('SELECT fingerprint, photo FROM upload_receipts WHERE scope = ? AND created_at > ?').get(scope, Date.now() - receiptLifetime) as { fingerprint: string; photo: string } | undefined;
+  if (!receipt) return null;
+  if (receipt.fingerprint !== fingerprint) throw new AuthError(409, 'This upload identifier was already used for another file.');
+  return JSON.parse(receipt.photo) as Photo;
+}
+
+export function writeUploadReceipt(scope: string, fingerprint: string, photo: Photo) {
+  db().transaction(() => {
+    db().prepare('DELETE FROM upload_receipts WHERE created_at < ?').run(Date.now() - receiptLifetime);
+    db().prepare('INSERT OR REPLACE INTO upload_receipts (scope, fingerprint, photo, created_at) VALUES (?, ?, ?, ?)').run(scope, fingerprint, JSON.stringify(photo), Date.now());
+  })();
 }

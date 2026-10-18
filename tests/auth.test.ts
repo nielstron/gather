@@ -232,3 +232,22 @@ test('shared-link joins avoid existing folders regardless of capitalization', ()
   const joined = auth.joinCollection(token, 'UppercaseGuest');
   assert.notEqual(joined.member.folder.toLowerCase(), 'uppercaseguest');
 });
+
+test('upload receipts survive a database reopen, reject mismatches, and are scoped to owner and collection', async () => {
+  const { member } = auth.createMember('Receipt owner', 'receipt-owner');
+  const scope = auth.uploadScope(member, 'stable-upload-identifier');
+  const photo = { id: 'photo-id', name: 'saved.png', folder: member.folder, owner: member.name, width: 20, height: 20, bytes: 12, modifiedAt: new Date().toISOString(), previewStatus: 'pending' as const };
+  assert.equal(auth.readUploadReceipt(scope, 'fingerprint'), null);
+  auth.writeUploadReceipt(scope, 'fingerprint', photo);
+  assert.deepEqual(auth.readUploadReceipt(scope, 'fingerprint'), photo);
+  assert.throws(() => auth.readUploadReceipt(scope, 'different'), /another file/);
+  assert.notEqual(auth.uploadScope({ ...member, id: 'other-owner' }, 'stable-upload-identifier'), scope);
+  const previousRoot = process.env.PHOTO_ROOT;
+  try {
+    process.env.PHOTO_ROOT = path.join(directory, 'other-collection');
+    assert.notEqual(auth.uploadScope(member, 'stable-upload-identifier'), scope);
+  } finally { process.env.PHOTO_ROOT = previousRoot; }
+  const snapshot = new Database(path.join(directory, 'data/auth.sqlite'), { readonly: true });
+  try { assert.equal(JSON.parse((snapshot.prepare('SELECT photo FROM upload_receipts WHERE scope = ?').get(scope) as { photo: string }).photo).id, photo.id); }
+  finally { snapshot.close(); }
+});
