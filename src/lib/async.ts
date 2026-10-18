@@ -13,6 +13,27 @@ export function createLimiter(concurrency: number) {
   };
 }
 
+/** Share a resource budget fairly; an oversized task runs alone. */
+export function createWeightedLimiter(capacity: number) {
+  if (!Number.isFinite(capacity) || capacity <= 0) throw new Error('Invalid capacity');
+  let active = 0;
+  const waiting: { cost: number; start: () => void }[] = [];
+  const drain = () => {
+    while (waiting.length && active + waiting[0].cost <= capacity) {
+      const item = waiting.shift()!;
+      active += item.cost;
+      item.start();
+    }
+  };
+  return async function limited<T>(cost: number, task: () => Promise<T>): Promise<T> {
+    if (!Number.isFinite(cost) || cost <= 0) throw new Error('Invalid task cost');
+    const reserved = Math.min(capacity, cost);
+    await new Promise<void>(resolve => { waiting.push({ cost: reserved, start: resolve }); drain(); });
+    try { return await task(); }
+    finally { active -= reserved; drain(); }
+  };
+}
+
 export async function mapConcurrent<T, R>(items: readonly T[], concurrency: number, task: (item: T, index: number) => Promise<R>): Promise<R[]> {
   if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new Error('Invalid concurrency');
   const result: R[] = new Array(items.length);

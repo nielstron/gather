@@ -310,6 +310,24 @@ test('existing unindexed files are compared by contents and hash caches detect m
   await assertNoTemporaryFiles();
 });
 
+test('committed uploads update the gallery and duplicate index without rescanning the mounted folder', async () => {
+  media.invalidatePhotos();
+  const before = await media.scanPhotos([]);
+  const unseen = path.join(photoRoot, 'bob', 'external-between-refreshes.png');
+  writeFileSync(unseen, png);
+  const unique = await sharp({ create: { width: 37, height: 31, channels: 3, background: '#782da9' } }).png().toBuffer();
+  const saved = await media.saveUpload(alice, 'incremental-upload.png', body(unique));
+  const cached = await media.scanPhotos([]);
+  assert.equal(cached.length, before.length + 1);
+  assert(cached.some(photo => photo.id === saved.id), 'the upload is visible immediately');
+  assert(!cached.some(photo => photo.name === 'external-between-refreshes.png'), 'an upload must not force another directory walk');
+  const { createHash } = await import('node:crypto');
+  const duplicate = await media.duplicatePhoto(createHash('sha256').update(unique).digest('hex'), unique.length);
+  assert.equal(duplicate?.id, saved.id, 'preflight sees the new upload without another scan');
+  media.invalidatePhotos();
+  assert((await media.scanPhotos([])).some(photo => photo.name === 'external-between-refreshes.png'), 'explicit refresh still discovers external changes');
+});
+
 test('gallery requests can use the last snapshot while one shared refresh runs', async () => {
   const before = await media.scanPhotos([]);
   const filename = path.join(photoRoot, 'bob', 'new-external.png');

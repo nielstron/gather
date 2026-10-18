@@ -9,14 +9,18 @@ import sharp from 'sharp';
 import { currentCollectionId } from './settings';
 import { config } from './config';
 import { readFileChecksum, writeFileChecksum } from './auth';
-import { runConcurrentQueue, mapConcurrent } from '../async';
+import { createLimiter, createWeightedLimiter, runConcurrentQueue, mapConcurrent } from '../async';
 import type { Member, Photo } from '../types';
 
 const extensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif', '.tif', '.tiff', '.heic', '.heif']);
 const formats = new Set(['jpeg', 'png', 'webp', 'avif', 'gif', 'tiff', 'heif']);
 type ScanCache = { root: string; time: number; photos: Photo[]; ids: Set<string> };
-type ScanState = { cache?: ScanCache; scanning?: Promise<Photo[]>; generation: number };
+type ScanState = { cache?: ScanCache; scanning?: Promise<Photo[]>; generation: number; uploaded?: Map<string, Photo> };
 const scans = new Map<string, ScanState>();
+// Leave filesystem workers available for uploads, downloads and DNS on slow mounts.
+const scanRequests = createLimiter(4);
+// Bound decoded pixels, while smaller images and network transfers stay parallel.
+const validateImage = createWeightedLimiter(48_000_000);
 function scanState(): ScanState {
   let state = scans.get(config.photoRoot);
   if (!state) {
@@ -105,9 +109,10 @@ export async function scanPhotos(members: Member[], allowStale = false): Promise
   const startedGeneration = state.generation;
   state.scanning = (async () => {
     await ensureRoot();
+    const started = performance.now();
     const photos: Photo[] = [];
     type Work = { relative: string; depth: number; directory: boolean };
-    await runConcurrentQueue<Work>([{ relative: '', depth: 0, directory: true }], 16, async (work, enqueue) => {
+    await runConcurrentQueue<Work>([{ relative: '', depth: 0, directory: true }], 4, (work, enqueue) => scanRequests(async () => {
       if (work.directory) {
         if (work.depth > 12) return;
         const entries = await readdir(path.join(config.photoRoot, work.relative), { withFileTypes: true });
@@ -126,7 +131,14 @@ export async function scanPhotos(members: Member[], allowStale = false): Promise
           }
         } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       }
-    });
+    }));
+    if (state.uploaded) {
+      const known = new Map(photos.map(photo => [photo.id, photo]));
+      for (const photo of state.uploaded.values()) known.set(photo.id, photo);
+      photos.splice(0, photos.length, ...known.values());
+      state.uploaded = undefined;
+    }
+    if (performance.now() - started > 3_000) console.warn('Gather: slow folder listing', { milliseconds: Math.round(performance.now() - started), photos: photos.length });
     photos.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.id.localeCompare(b.id));
     if (state.generation === startedGeneration) state.cache = { root: config.photoRoot, time: Date.now(), photos, ids: new Set(photos.map(photo => photo.id)) };
     return photos;
@@ -188,6 +200,11 @@ export async function saveUpload(member: Member, name: string, body: ReadableStr
   let temporary: string | undefined;
   let remoteTemporary: string | undefined;
   let size = 0;
+  const started = performance.now();
+  let stage = 'receiving';
+  const timings: Record<string, number> = {};
+  let stageStarted = started;
+  const nextStage = (next: string) => { const now = performance.now(); timings[stage] = Math.round(now - stageStarted); stage = next; stageStarted = now; };
   try {
     const folder = await checkedDirectory([member.folder]);
     const staging = path.join(config.dataRoot, 'incoming');
@@ -206,8 +223,10 @@ export async function saveUpload(member: Member, name: string, body: ReadableStr
     const running = committingContent.get(contentKey);
     if (running) return { ...await running, duplicate: true };
     const commit = (async () => {
+      nextStage('duplicateCheck');
       const existing = await duplicatePhoto(digest, size, signal);
       if (existing) return existing;
+      nextStage('validation');
       let dimensions = { width: 4, height: 3 };
       try {
         const info = await sharp(temporary!, { limitInputPixels: 80_000_000 }).metadata();
@@ -216,10 +235,15 @@ export async function saveUpload(member: Member, name: string, body: ReadableStr
         const rotate = info.orientation && info.orientation >= 5;
         dimensions = { width: rotate ? info.height : info.width, height: rotate ? info.width : info.height };
         // Fully decode to reject truncated files; this does not create a thumbnail.
-        await sharp(temporary!, { limitInputPixels: 80_000_000, failOn: 'warning' }).stats();
+        await validateImage(info.width * info.height, async () => {
+          signal?.throwIfAborted();
+          await sharp(temporary!, { limitInputPixels: 80_000_000, failOn: 'warning' }).stats();
+        });
       } catch {
         throw new MediaError(415, 'This server could not validate the image. Try JPEG or PNG; HEIC support depends on the server decoder.');
       }
+      signal?.throwIfAborted();
+      nextStage('storage');
       await checkedDirectory([member.folder]);
       remoteTemporary = path.join(folder, `.gather-incoming-${randomUUID()}`);
       await pipeline(createReadStream(temporary!), createWriteStream(remoteTemporary, { flags: 'wx', mode: 0o640 }), { signal });
@@ -232,15 +256,18 @@ export async function saveUpload(member: Member, name: string, body: ReadableStr
       }
       if (!saved) throw new MediaError(409, 'Could not choose a unique filename. Please retry.');
       await unlink(remoteTemporary); remoteTemporary = undefined;
-      invalidatePhotos();
       const photo = await photoInfo(`${member.folder}/${saved}`, [member], dimensions);
       if (!photo) throw new MediaError(500, 'Photo saved but could not be inspected');
-      const scanCache = scanState().cache;
+      const state = scanState();
+      // Merge commits into an ongoing listing so its older snapshot cannot lose uploads.
+      if (state.scanning) (state.uploaded ||= new Map()).set(photo.id, photo);
+      const scanCache = state.cache;
       if (scanCache?.root === config.photoRoot) {
         scanCache.photos = [...scanCache.photos.filter(existing => existing.id !== photo.id), photo];
         scanCache.ids.add(photo.id);
       }
       writeFileChecksum(`${member.folder}/${saved}`, photo.revision!, digest);
+      nextStage('cleanup');
       return photo;
     })();
     committingContent.set(contentKey, commit);
@@ -252,6 +279,8 @@ export async function saveUpload(member: Member, name: string, body: ReadableStr
     const count = (activeUploads.get(member.id) || 1) - 1;
     if (count) activeUploads.set(member.id, count); else activeUploads.delete(member.id);
     uploadCount--;
+    nextStage('done');
+    if (performance.now() - started > 3_000) console.warn('Gather: slow upload', { milliseconds: Math.round(performance.now() - started), bytes: size, phases: timings });
   }
 }
 
