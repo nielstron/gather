@@ -98,3 +98,5 @@
   .pending-preview > svg { width: 20px; height: 20px; }
   .pending-preview > span:last-child { display: block; font-size: 11px; line-height: 1.2; }
 }
+
+.search-controls{display:none}.search-controls.visible{display:block;padding:0 40px;border-bottom:1px solid var(--border);background:#faf9fd}@media(max-width:650px){.search-controls.visible{padding:0 20px}}

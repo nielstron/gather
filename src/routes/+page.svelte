@@ -32,6 +32,21 @@
   let searchTruncated = false;
   let searchOrder = false;
   let searchFilters: SearchFilters;
+  let searchActive = false;
+  let searchInput: HTMLInputElement;
+  let searchControls: HTMLDivElement;
+  function dismissSearch(event: MouseEvent) {
+    const field = searchInput?.closest('.search-input');
+    // The clicked control may remove itself (for example, Clear people).
+    // Its original event path still identifies the search area.
+    if (!event.composedPath().some(node => node === field || node === searchControls)) searchActive = false;
+  }
+  function searchKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape' && searchActive) {
+      searchInput?.focus();
+      searchActive = false;
+    }
+  }
   let sort = 'relevance';
   let sortDirection = 'desc';
   let selected = new Set<string>();
@@ -491,7 +506,7 @@
 </script>
 
 <svelte:head><title>{data.collectionName} · Gather</title><meta name="description" content="A shared place for everyone's photos. Upload to your own folder and download the moments you love." /></svelte:head>
-<svelte:window on:online={resumeUploads} on:dragover={handleDrag} on:drop={handleDrop} />
+<svelte:window on:click={dismissSearch} on:keydown={searchKeydown} on:online={resumeUploads} on:dragover={handleDrag} on:drop={handleDrop} />
 
 {#if !data.user}
   <main class="welcome">
@@ -552,9 +567,12 @@
       <header class="topbar">
         <button class="identity-button mobile-identity" on:click={openProfile} aria-label={`Change name for ${data.user.name}`} aria-haspopup="dialog" title={`Change name: ${data.user.name}`}><span class="identity-icon"><Icon name="user" size={22} /></span><span class="identity-name">{data.user.name}</span></button>
         <div class="breadcrumb"><Icon name="folder" size={16} /><span>{data.collectionName}</span><Icon name="chevron" size={13} /><strong>{pageTitle}</strong></div>
-        <label class="search-input"><Icon name="search" size={18} /><input type="search" aria-label="Search photos" placeholder="Describe a scene, place, or moment…" bind:value={query} on:input={search} /><span class="search-hint">{searchOptions.mode === 'semantic' ? 'by meaning' : searchOptions.mode === 'filename' ? 'by filename' : 'descriptions'}</span></label>
+        <label class="search-input"><Icon name="search" size={18} /><input type="search" aria-label="Search photos" bind:this={searchInput} on:focus={() => searchActive = true} on:click={() => searchActive = true} aria-controls="search-controls" placeholder="Describe a scene, place, or moment…" bind:value={query} on:input={search} /><span class="search-hint">{searchOptions.mode === 'semantic' ? 'by meaning' : searchOptions.mode === 'filename' ? 'by filename' : 'descriptions'}</span></label>
         <Button class="primary-button top-upload" onclick={() => input.click()}><Icon name="upload" size={17} /><span>Upload photos</span></Button>
       </header>
+      <div id="search-controls" class="search-controls" class:visible={searchActive} bind:this={searchControls}>
+        <SearchFilters {query} visible={searchActive} bind:this={searchFilters} bind:value={searchOptions} on:apply={(event) => { searchOptions = event.detail; selected = new Set(); photos = []; sort = 'relevance'; sortDirection = searchOptions.orderBy?.direction || 'desc'; void loadPhotos(); }} />
+      </div>
       <section class="gallery-section" aria-label="Photo collection" style:padding-bottom={uploads.length ? `${uploadPanelHeight + 48}px` : undefined}>
         <h1 class="sr-only">{pageTitle}</h1>
         <div class="gallery-toolbar">
@@ -573,7 +591,6 @@
             </div>
           </div>
         </div>
-        <SearchFilters {query} bind:this={searchFilters} bind:value={searchOptions} on:apply={(event) => { searchOptions = event.detail; selected = new Set(); photos = []; sort = 'relevance'; sortDirection = searchOptions.orderBy?.direction || 'desc'; void loadPhotos(); }} />
         {#if searchTruncated}<p class="search-limit-notice">Showing the best {total} semantic matches. Add filters to narrow the results.</p>{/if}
         {#if previewService !== 'ready'}<div class="service-notice"><Icon name="info" size={19} /><div><strong>{previewService === 'unconfigured' ? 'Connect Immich to bring your gallery to life' : 'Immich previews are temporarily unavailable'}</strong><p>{previewService === 'unconfigured' ? 'Your host needs to connect an Immich external library. You can already upload photos and download originals.' : 'Your photos are safely stored. You can keep uploading and downloading originals while Immich reconnects.'}</p></div><button class="text-button" on:click={() => loadPhotos()}>Refresh</button></div>{/if}
         {#if error}<div class="error-notice" role="alert"><Icon name="info" size={18} /><span>{error}</span><button class="text-button" on:click={() => loadPhotos()}>Try again</button></div>{/if}

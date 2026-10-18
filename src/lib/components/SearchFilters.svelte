@@ -3,15 +3,19 @@
   import { page } from '$app/stores';
   import { collectionBase } from '$lib/collection-path';
   $: base = collectionBase($page.url.pathname, appBase);
-  import { createEventDispatcher, onDestroy } from 'svelte';
+  import { createEventDispatcher, onDestroy, tick } from 'svelte';
   import Thumbnail from './Thumbnail.svelte';
   import Icon from './Icon.svelte';
   import { searchFields, operators, operatorLabels, validateSearch, type CollectionSearch, type SearchPerson } from '$lib/search';
   export let query = '';
+  export let visible = false;
   export let value: CollectionSearch = { mode: 'semantic' };
   const dispatch = createEventDispatcher<{ apply: CollectionSearch }>();
   type Row = { id: number; field: string; op: string; value: string; empty: boolean };
   let open = false;
+  let peopleInput: HTMLInputElement;
+  let modeInput: HTMLSelectElement;
+  $: if (!visible) open = false;
   let mode: CollectionSearch['mode'] = value.mode;
   let groups: Row[][] = [[]];
   let sequence = 0;
@@ -46,7 +50,12 @@
     } catch (error) { if (!controller.signal.aborted) peopleError = error instanceof Error ? error.message : 'People could not be loaded.'; }
     finally { peopleLoading = false; }
   }
-  function toggleOpen() { open = !open; if (open && !peopleLoaded) void loadPeople(); }
+  async function showFilters(peopleFirst = false) {
+    open = true;
+    if (!peopleLoaded) void loadPeople();
+    await tick();
+    (peopleFirst ? peopleInput : modeInput)?.focus();
+  }
   function addRow(group: number) { groups = groups.map((rows, index) => index === group ? [...rows, { id: ++sequence, field: 'takenAt', op: 'gte', value: '', empty: false }] : rows); }
   function removeRow(group: number, id: number) { groups = groups.map((rows, index) => index === group ? rows.filter(row => row.id !== id) : rows); }
   function changeField(row: Row) { row.op = operators(searchFields.find(field => field.key === row.field)!)[0]; row.value = ''; row.empty = false; groups = [...groups]; }
@@ -95,18 +104,20 @@
   onDestroy(() => controller?.abort());
 </script>
 
-<div class="search-tools">
-  <button class="filter-toggle" class:active={filterCount > 0} on:click={toggleOpen} aria-expanded={open} aria-controls="search-filters"><Icon name="filter" size={18} />Filters &amp; people{#if filterCount}<span>{filterCount}</span>{/if}</button>
+{#if visible}
+<div class="search-tools" aria-label="Search tools">
+  <button class="filter-toggle" class:active={filterCount > 0} on:click={() => showFilters()} aria-expanded={open} aria-controls="search-filters"><Icon name="filter" size={18} />Filters{#if filterCount}<span>{filterCount}</span>{/if}</button>
+  <button class="filter-toggle" class:active={!!value.filter?.personIds} on:click={() => showFilters(true)} aria-expanded={open} aria-controls="search-filters"><Icon name="people" size={18} />People</button>
   <span class="search-mode-note"><Icon name={value.mode === 'semantic' ? 'spark' : 'search'} size={15} />{value.mode === 'semantic' ? 'Search by meaning' : value.mode === 'filename' ? 'Search by filename' : 'Search descriptions'}</span>
   {#if filterCount || value.mode !== 'semantic' || value.queryAssetId}<button class="text-button" on:click={reset}>Clear filters</button>{/if}
 </div>
 {#if open}
   <form id="search-filters" class="search-filters" on:submit|preventDefault={apply}>
     <header><div><h2>Search this collection</h2><p>Describe a scene, find a face, or combine filters.</p></div><button type="button" class="icon-button" on:click={() => { open = false; }} aria-label="Close search filters"><Icon name="close" /></button></header>
-    <label class="filter-label">Search mode<select aria-label="Search mode" bind:value={mode}><option value="semantic">Semantic · scenes and context (CLIP)</option><option value="filename">Filename and contributor</option><option value="metadata">Description text</option></select></label>
+    <label class="filter-label">Search mode<select aria-label="Search mode" bind:this={modeInput} bind:value={mode}><option value="semantic">Semantic · scenes and context (CLIP)</option><option value="filename">Filename and contributor</option><option value="metadata">Description text</option></select></label>
     <section class="people-filter" aria-label="People filter">
       <div class="filter-heading"><h3><Icon name="people" size={19} />People in these photos</h3><button class="text-button" type="button" on:click={loadPeople} disabled={peopleLoading}>Refresh people</button></div>
-      <div class="people-controls"><input type="search" aria-label="Find a person" placeholder="Find a person…" bind:value={peopleQuery} /><label class="filter-label">Match<select aria-label="People match" bind:value={peopleMatch}><option value="all">All selected people</option><option value="any">Any selected person</option><option value="none">Exclude selected people</option></select></label></div>
+      <div class="people-controls"><input type="search" aria-label="Find a person" bind:this={peopleInput} placeholder="Find a person…" bind:value={peopleQuery} /><label class="filter-label">Match<select aria-label="People match" bind:value={peopleMatch}><option value="all">All selected people</option><option value="any">Any selected person</option><option value="none">Exclude selected people</option></select></label></div>
       {#if peopleLoading}<p class="filter-help" role="status">Loading people…</p>{:else if peopleError}<p class="error-text" role="alert">{peopleError}</p>{:else if !people.length}<p class="filter-help">No recognized people in this collection yet. Faces appear after Immich finishes face recognition.</p>{:else}
         <div class="people-options">{#each visiblePeople as person (person.id)}<button type="button" class="face-option" class:chosen={selectedPeople.includes(person.id)} aria-pressed={selectedPeople.includes(person.id)} aria-label={`${person.name || 'Unnamed person'} (${person.count} photos)`} on:click={() => togglePerson(person.id)}><span class="face-image">{#if person.face}<Thumbnail src={`${base}/api/media/${person.photoId}?kind=thumbnail&v=${encodeURIComponent(person.revision || '')}`} imageStyle={faceStyle(person)} alt="" />{:else}<Icon name="user" size={25} />{/if}</span><span>{person.name || 'Unnamed person'}<small>{person.count} {person.count === 1 ? 'photo' : 'photos'}</small></span>{#if selectedPeople.includes(person.id)}<Icon name="check" size={18} />{/if}</button>{/each}</div>
         {#if !visiblePeople.length}<p class="filter-help">No people match that name.</p>{/if}
@@ -146,6 +157,8 @@
   </form>
 {/if}
 
+{/if}
+
 <style>
-  .search-tools{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:0 0 20px;font-size:12px}.filter-toggle{display:flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:white;color:var(--text)}.filter-toggle.active{color:var(--accent);background:#f0edff}.filter-toggle>span{border-radius:10px;padding:1px 6px;background:#e5dfff}.search-mode-note{display:flex;align-items:center;gap:5px;color:#777582}.search-filters{border:1px solid var(--border);border-radius:14px;padding:22px;margin-bottom:24px;background:#faf9fd;display:grid;gap:22px;font-size:13px}.search-filters header,.filter-heading,.search-filters footer{display:flex;align-items:center;justify-content:space-between;gap:12px}.search-filters h2{font-size:19px}.search-filters h3{font-size:14px;margin:0 0 8px;display:flex;align-items:center;gap:6px}.search-filters header p,.filter-help{color:#777582;font-size:12px;line-height:1.6;margin-top:5px}.filter-label{display:flex;flex-direction:column;gap:7px;font-size:12px;color:#666370}.search-filters input:not([type=checkbox]),.search-filters select{border:1px solid #dedbe7;border-radius:7px;background:#fff;color:#393641;padding:9px 10px;min-height:38px;width:100%}.people-controls{display:flex;align-items:end;gap:12px}.people-controls>input{flex:1}.people-controls>label{flex:1}.people-options{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;max-height:290px;overflow-y:auto;margin-top:12px;padding:3px}.face-option{display:flex;align-items:center;gap:10px;text-align:left;background:white;border:1px solid #e4e0eb;border-radius:10px;padding:8px;color:#53505e;font-size:12px}.face-option.chosen{border-color:var(--accent);background:#f0edff;color:var(--accent)}.face-option>span:nth-child(2){flex:1;min-width:0;overflow-wrap:anywhere}.face-option small{display:block;color:#8b8795;font-size:10px;margin-top:3px}.face-image{display:flex;align-items:center;justify-content:center;position:relative;width:42px;height:42px;flex-shrink:0;border-radius:50%;overflow:hidden;background:#ece9f5}.face-image :global(img){width:100%;height:100%;object-fit:cover}.condition-group{border:1px solid #e4e0eb;padding:12px;border-radius:8px;margin-top:12px}.condition-group>strong{font-size:11px;color:#85808d}.condition-row{display:flex;align-items:center;gap:8px;margin:10px 0}.condition-row>select{flex:1}.condition-row>input{flex:1.4}.empty-filter{display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:12px}.more-search-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:16px}summary{cursor:pointer;color:#696273}.apply-filters{display:flex;align-items:center;gap:7px;color:white;background:var(--accent);padding:10px 16px;border-radius:8px}.search-filters .text-button{font-size:12px}.search-filters footer{border-top:1px solid #e4e0eb;padding-top:16px} @media(max-width:600px){.search-filters{padding:14px}.condition-row{flex-wrap:wrap}.condition-row>select{flex:1 1 40%}.condition-row>input{flex:1 1 65%}.more-search-options{grid-template-columns:1fr}.search-mode-note{font-size:11px}.people-controls{flex-direction:column;align-items:stretch}}
+  .search-tools{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:0;padding:12px 0;font-size:12px}.filter-toggle{display:flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:white;color:var(--text)}.filter-toggle.active{color:var(--accent);background:#f0edff}.filter-toggle>span{border-radius:10px;padding:1px 6px;background:#e5dfff}.search-mode-note{display:flex;align-items:center;gap:5px;color:#777582}.search-filters{border:1px solid var(--border);border-radius:14px;padding:22px;margin:0 0 16px;background:#faf9fd;display:grid;gap:22px;font-size:13px}.search-filters header,.filter-heading,.search-filters footer{display:flex;align-items:center;justify-content:space-between;gap:12px}.search-filters h2{font-size:19px}.search-filters h3{font-size:14px;margin:0 0 8px;display:flex;align-items:center;gap:6px}.search-filters header p,.filter-help{color:#777582;font-size:12px;line-height:1.6;margin-top:5px}.filter-label{display:flex;flex-direction:column;gap:7px;font-size:12px;color:#666370}.search-filters input:not([type=checkbox]),.search-filters select{border:1px solid #dedbe7;border-radius:7px;background:#fff;color:#393641;padding:9px 10px;min-height:38px;width:100%}.people-controls{display:flex;align-items:end;gap:12px}.people-controls>input{flex:1}.people-controls>label{flex:1}.people-options{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;max-height:290px;overflow-y:auto;margin-top:12px;padding:3px}.face-option{display:flex;align-items:center;gap:10px;text-align:left;background:white;border:1px solid #e4e0eb;border-radius:10px;padding:8px;color:#53505e;font-size:12px}.face-option.chosen{border-color:var(--accent);background:#f0edff;color:var(--accent)}.face-option>span:nth-child(2){flex:1;min-width:0;overflow-wrap:anywhere}.face-option small{display:block;color:#8b8795;font-size:10px;margin-top:3px}.face-image{display:flex;align-items:center;justify-content:center;position:relative;width:42px;height:42px;flex-shrink:0;border-radius:50%;overflow:hidden;background:#ece9f5}.face-image :global(img){width:100%;height:100%;object-fit:cover}.condition-group{border:1px solid #e4e0eb;padding:12px;border-radius:8px;margin-top:12px}.condition-group>strong{font-size:11px;color:#85808d}.condition-row{display:flex;align-items:center;gap:8px;margin:10px 0}.condition-row>select{flex:1}.condition-row>input{flex:1.4}.empty-filter{display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:12px}.more-search-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:16px}summary{cursor:pointer;color:#696273}.apply-filters{display:flex;align-items:center;gap:7px;color:white;background:var(--accent);padding:10px 16px;border-radius:8px}.search-filters .text-button{font-size:12px}.search-filters footer{border-top:1px solid #e4e0eb;padding-top:16px} @media(max-width:600px){.search-filters{padding:14px}.condition-row{flex-wrap:wrap}.condition-row>select{flex:1 1 40%}.condition-row>input{flex:1 1 65%}.more-search-options{grid-template-columns:1fr}.search-mode-note{font-size:11px}.people-controls{flex-direction:column;align-items:stretch}}
 </style>
