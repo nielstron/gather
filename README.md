@@ -4,6 +4,8 @@ A small self-hosted photo exchange for friends. Create a collection for each tri
 
 The interface uses SvelteKit, Immich UI, and a timeline of justified photo tiles with 2-pixel gaps and compact day labels. Portraits and panoramas keep their aspect ratios, and PhotoSwipe opens the larger preview. “Recently added” groups photos by their filesystem modification date in the viewer's local timezone; “Filename A–Z” shows one continuous grid. This is a working prototype intended for one Node process and small trusted groups.
 
+Browser Back and phone back gestures close the current photo preview or modal before leaving the gallery. Nested dialogs close one at a time. Close buttons, Escape, and saving name settings also consume the modal history entry.
+
 ## Start locally
 
 Requires Node 22.17 or newer.

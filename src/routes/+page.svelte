@@ -10,6 +10,7 @@
   import { Button, Badge } from '@immich/ui';
   import justifiedLayout from 'justified-layout';
   import PhotoSwipe from 'photoswipe';
+  import { modalHistory, trackModalHistory } from '$lib/modal-history';
   import { installProgressiveImages } from '$lib/progressive-viewer';
   import SortPicker from '$lib/components/SortPicker.svelte';
   import SearchFilters from '$lib/components/SearchFilters.svelte';
@@ -316,6 +317,16 @@
     });
     const activeViewer = viewer;
     installProgressiveImages(activeViewer);
+    let releaseHistory = () => {};
+    activeViewer.on('afterInit', () => {
+      releaseHistory = trackModalHistory(() => {
+        // PhotoSwipe ignores close() while its opening animation is running.
+        if (activeViewer.opener.isOpening) activeViewer.on('openingAnimationEnd', () => activeViewer.close());
+        else activeViewer.close();
+      });
+    });
+    activeViewer.on('close', () => releaseHistory());
+    activeViewer.on('destroy', () => releaseHistory());
     activeViewer.on('destroy', () => { if (viewer === activeViewer) viewer = undefined; });
     activeViewer.on('uiRegister', () => {
       activeViewer.ui?.registerElement({
@@ -621,7 +632,7 @@
     </main>
   </div>
   <input class="sr-only" bind:this={input} type="file" multiple accept="image/*,.heic,.heif,.avif,.tif,.tiff" aria-label="Choose photos to upload" on:change={(event) => { if (event.currentTarget.files) addUploads(event.currentTarget.files); event.currentTarget.value = ''; }} />
-  <dialog class="profile-dialog" bind:this={profileDialog} aria-labelledby="profile-heading">
+  <dialog use:modalHistory class="profile-dialog" bind:this={profileDialog} aria-labelledby="profile-heading">
     <button class="icon-button dialog-close" on:click={() => profileDialog.close()} aria-label="Close name settings" disabled={savingProfile}><Icon name="close" /></button>
     <span class="profile-dialog-icon"><Icon name="user" size={26} /></span>
     <h2 id="profile-heading">Make yourself at home</h2>
@@ -636,5 +647,5 @@
   </dialog>
   {#if dragging}<div class="drop-overlay"><div><span class="drop-icon"><Icon name="upload" size={42} /></span><h2>Drop your moments here</h2><p>Uploading to <strong>{data.user.name}’s folder</strong></p><span>Everyone in the collection can view and download them.</span></div></div>{/if}
   {#if uploads.length}<section class="upload-panel" bind:clientHeight={uploadPanelHeight} aria-label="Upload progress" aria-live="polite"><header><span class="upload-panel-icon"><Icon name={activeUploads ? 'upload' : 'check'} size={19} /></span><div><strong>{activeUploads ? `Uploading ${uploads.length - completedUploads} ${uploads.length - completedUploads === 1 ? 'photo' : 'photos'}` : `${completedUploads} of ${uploads.length} finished${uploads.some(item => item.duplicate) ? ` · ${uploads.filter(item => item.duplicate).length} skipped` : ''}`}</strong><span><Icon name="folder" size={12} /> Folder: {data.user.folder}/</span></div><button class="icon-button" on:click={() => { uploadPanelOpen = !uploadPanelOpen; }} aria-label={uploadPanelOpen ? 'Minimize uploads' : 'Expand uploads'}><span>{uploadPanelOpen ? '−' : '+'}</span></button>{#if !activeUploads}<button class="icon-button" on:click={() => { uploads = []; }} aria-label="Close uploads"><Icon name="close" size={17} /></button>{/if}</header>{#if uploadPanelOpen}<div class="upload-list">{#each uploads as item (item.id)}<div class="upload-row"><span class="upload-file-icon"><Icon name="image" size={21} /></span><div class="upload-item-body"><strong>{item.file.name}</strong><span class:error-text={item.status === 'error'}>{item.status === 'done' ? item.duplicate ? 'Already in collection · skipped' : 'Saved · Immich preview processing' : item.status === 'checking' ? 'Checking for duplicates…' : item.status === 'uploading' ? `${item.progress}% · ${bytes(item.file.size)}` : item.status === 'error' || item.status === 'retrying' ? item.error : item.status === 'cancelled' ? 'Cancelled' : 'Waiting to upload'}</span>{#if item.status === 'uploading'}<div class="upload-progress"><div style:width={`${item.progress}%`}></div></div>{/if}</div>{#if item.status === 'done'}<span class="upload-success"><Icon name="check" size={18} /></span>{:else if item.status === 'error' || item.status === 'cancelled'}<button class="icon-button" on:click={() => retryUpload(item)} disabled={item.file.size > data.maxUploadBytes} aria-label={`Retry ${item.file.name}`}><Icon name="refresh" size={16} /></button>{:else}<button class="icon-button" on:click={() => cancelUpload(item)} aria-label={`Cancel ${item.file.name}`}><Icon name="close" size={16} /></button>{/if}</div>{/each}</div><footer>Shared with everyone in this collection.</footer>{/if}</section>{/if}
-  <dialog class="pending-dialog" bind:this={pendingDialog}><button class="icon-button dialog-close" on:click={() => pendingDialog.close()} aria-label="Close photo details"><Icon name="close" /></button>{#if pendingPhoto}<div class="dialog-image"><Icon name="image" size={52} /></div><Badge size="small" color="secondary">Original safely stored</Badge><h2>{pendingPhoto.name}</h2><p>{pendingPhoto.previewStatus === 'pending' ? 'Immich is preparing this photo’s preview. The original is already yours to enjoy.' : 'The Immich preview is currently unavailable. You can still download the original photo.'}</p><div class="dialog-metadata"><span>Shared by {pendingPhoto.owner}</span><span>{bytes(pendingPhoto.bytes)}</span></div><a class="primary-button button-link" href={mediaUrl(pendingPhoto, 'original')} download={pendingPhoto.name}><Icon name="download" size={18} />Download original</a>{/if}</dialog>
+  <dialog use:modalHistory class="pending-dialog" bind:this={pendingDialog}><button class="icon-button dialog-close" on:click={() => pendingDialog.close()} aria-label="Close photo details"><Icon name="close" /></button>{#if pendingPhoto}<div class="dialog-image"><Icon name="image" size={52} /></div><Badge size="small" color="secondary">Original safely stored</Badge><h2>{pendingPhoto.name}</h2><p>{pendingPhoto.previewStatus === 'pending' ? 'Immich is preparing this photo’s preview. The original is already yours to enjoy.' : 'The Immich preview is currently unavailable. You can still download the original photo.'}</p><div class="dialog-metadata"><span>Shared by {pendingPhoto.owner}</span><span>{bytes(pendingPhoto.bytes)}</span></div><a class="primary-button button-link" href={mediaUrl(pendingPhoto, 'original')} download={pendingPhoto.name}><Icon name="download" size={18} />Download original</a>{/if}</dialog>
 {/if}

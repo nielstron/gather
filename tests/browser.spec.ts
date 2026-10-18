@@ -224,6 +224,8 @@ test('shared link, editable names, private gallery, Immich scan, uploads and ori
   await page.getByRole('button', { name: 'Change name for Alice', exact: true }).click();
   await page.getByRole('dialog').getByRole('textbox').fill('Alicia');
   await page.getByRole('button', { name: 'Save name', exact: true }).click();
+  await expect(page.locator('.profile-dialog')).not.toBeVisible();
+  await expect.poll(() => page.evaluate(() => !history.state?.['sveltekit:states']?.modalIds?.length)).toBe(true);
   await expect.poll(async () => {
     const data = await (await page.request.get(`${origin}${basePath}/api/photos`)).json();
     return data.photos.find((photo: { name: string }) => photo.name === 'new-memory.png')?.owner;
@@ -755,6 +757,68 @@ test('search defaults to semantic relevance, combines people and conditions, and
   await expect(page.getByRole('heading', { name: 'No matching photos' })).toBeVisible();
 });
 
+
+test('Back closes previews and every modal, and ordinary closes preserve page navigation', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invite = auth.createMember('Modal navigation', 'modal-navigation');
+  const session = auth.exchangeInvite(invite.token)!;
+  await page.context().addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
+  const previous = `${origin}${basePath}/api/health`;
+  await page.goto(previous);
+  await page.goto(`${origin}${basePath}/`);
+  await expect(page.locator('.photo-open').first()).toBeVisible();
+  const gallery = page.url();
+  const profile = page.locator('.profile-dialog');
+  const pending = page.locator('.pending-dialog');
+  const settled = () => expect.poll(() => page.evaluate(() => !(window.history.state?.['sveltekit:states']?.modalIds?.length))).toBe(true);
+  await page.getByRole('button', { name: 'Open weekend-0.jpg, shared by Host', exact: true }).click();
+  await expect(page.locator('.pswp')).toBeVisible();
+  await page.keyboard.press('ArrowRight');
+  await page.goBack();
+  await expect(page.locator('.pswp')).toHaveCount(0);
+  expect(page.url()).toBe(gallery);
+  await page.getByRole('button', { name: 'Change name for Modal navigation' }).first().click();
+  await expect(profile).toBeVisible();
+  await page.getByLabel('Display name', { exact: true }).fill('Unsaved name');
+  await page.goBack();
+  await expect(profile).not.toBeVisible();
+  expect(page.url()).toBe(gallery);
+  // Force the unavailable-preview path without changing any actual photo.
+  let unavailable = '';
+  await page.route('**/api/photos?*', async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    unavailable = body.photos[0].name;
+    body.photos[0].previewStatus = 'unavailable';
+    await route.fulfill({ response, json: body });
+  });
+  await page.getByRole('button', { name: 'Refresh photos', exact: true }).click();
+  await expect.poll(() => unavailable).not.toBe('');
+  await page.getByRole('button', { name: `Open ${unavailable},`, exact: false }).click();
+  await expect(pending).toBeVisible();
+  await page.goBack();
+  await expect(pending).not.toBeVisible();
+  expect(page.url()).toBe(gallery);
+  // Nested dialogs consume one Back each, leaving the lower dialog open.
+  await page.getByRole('button', { name: 'Change name for Modal navigation' }).first().click();
+  await page.evaluate(() => (document.querySelector('.pending-dialog') as HTMLDialogElement).showModal());
+  await expect(pending).toBeVisible();
+  await page.goBack();
+  await expect(pending).not.toBeVisible();
+  await expect(profile).toBeVisible();
+  await page.goBack();
+  await expect(profile).not.toBeVisible();
+  // Closing explicitly consumes the entry too; repeat and rapidly reopen.
+  await page.getByRole('button', { name: 'Change name for Modal navigation' }).first().click();
+  await page.getByRole('button', { name: 'Close name settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Change name for Modal navigation' }).first().click();
+  await expect(profile).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(profile).not.toBeVisible();
+  await settled();
+  await page.goBack();
+  await expect(page).toHaveURL(previous);
+});
 
 test('one admin creates and switches collections while guest access, files, and invitations stay isolated', async ({ page, browser, request }) => {
   const adminEndpoint = `${origin}${basePath}/api/admin`;
