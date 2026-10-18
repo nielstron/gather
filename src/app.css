@@ -125,3 +125,8 @@
 .selection-actions{display:flex;align-items:center;gap:8px;margin-left:auto}.selection-actions .icon-button{min-width:44px;min-height:44px}.delete-button{color:#b33a46}.delete-button:disabled{opacity:.35;cursor:not-allowed}.delete-dialog{position:fixed;inset:0;margin:auto;width:min(420px,calc(100% - 32px));max-height:calc(100dvh - 32px);overflow:auto;padding:24px;border:1px solid var(--border);border-radius:16px;color:var(--text);box-shadow:0 20px 80px #22183d33}.delete-dialog::backdrop{background:#22142e70;backdrop-filter:blur(4px)}.delete-dialog h2{font-size:22px}.delete-dialog p{font-size:14px;line-height:1.6;margin-top:16px}.delete-filename{overflow-wrap:anywhere;font-weight:600}.delete-dialog footer{display:flex;align-items:center;justify-content:flex-end;gap:18px;margin-top:24px}.delete-confirm{background:#b33a46!important}.pending-dialog>.delete-button{display:inline-flex;align-items:center;gap:8px;margin-top:16px}
 
 .selection-bar{flex-wrap:wrap}
+
+/* Use the same Material glyph size and positioning for every viewer control. */
+.pswp .pswp__button .pswp__icn{width:24px;height:24px;top:50%;left:50%;margin:0;transform:translate(-50%,-50%);stroke:none}
+.pswp .gather-zoom-out,.pswp--zoomed-in .gather-zoom-in{display:none}
+.pswp--zoomed-in .gather-zoom-out{display:block}

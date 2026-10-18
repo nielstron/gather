@@ -3,7 +3,7 @@
   import { page } from '$app/stores';
   import { collectionBase } from '$lib/collection-path';
   $: base = collectionBase($page.url.pathname, appBase);
-  import { mdiDownload, mdiTrashCanOutline } from '@mdi/js';
+  import { mdiDownload, mdiTrashCanOutline, mdiMagnifyPlusOutline, mdiMagnifyMinusOutline, mdiClose, mdiChevronLeft, mdiChevronRight } from '@mdi/js';
   import { saveQueuedUpload, updateQueuedUpload, removeQueuedUpload, restoreQueuedUploads } from '$lib/upload-queue';
   import { transferResumable, TransferError } from '$lib/resumable-upload';
   import { sortPhotos } from '$lib/sort';
@@ -412,7 +412,12 @@
       return;
     }
     const viewable = sortedPhotos.filter((item) => item.previewStatus === 'ready' && !imageErrors.has(item.id));
+    const viewerIcon = (inner: string) => `<svg aria-hidden="true" class="pswp__icn" viewBox="0 0 24 24" width="24" height="24">${inner}</svg>`;
     viewer = new PhotoSwipe({
+      zoomSVG: viewerIcon(`<path class="gather-zoom-in" d="${mdiMagnifyPlusOutline}"/><path class="gather-zoom-out" d="${mdiMagnifyMinusOutline}"/>`),
+      closeSVG: viewerIcon(`<path d="${mdiClose}"/>`),
+      arrowPrevSVG: viewerIcon(`<path d="${mdiChevronLeft}"/>`),
+      arrowNextSVG: viewerIcon(`<path d="${mdiChevronRight}"/>`),
       dataSource: viewable.map((item) => ({ src: mediaUrl(item, 'preview'), msrc: mediaUrl(item, 'thumbnail'), thumbnailSrc: mediaUrl(item, 'thumbnail'), fullSrc: mediaUrl(item, 'fullsize'), width: item.width || 1600, height: item.height || 1200, alt: item.name })),
       index: viewable.findIndex((item) => item.id === photo.id), bgOpacity: 0.97,
       preload: [1, 1], showHideAnimationType: 'fade', errorMsg: 'Immich has not finished this preview. You can still download the original.',
