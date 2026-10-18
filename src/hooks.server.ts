@@ -1,6 +1,7 @@
 import { withSettings, sessionCookieName, readSettings } from '$lib/server/settings';
 import { getAdminSession } from '$lib/server/admin';
 import { json, type Handle } from '@sveltejs/kit';
+import { ensureCanonicalFolders } from '$lib/server/contributor-folders';
 import { getSession } from '$lib/server/auth';
 import { collectionIdFromPath } from '$lib/collection-path';
 import { config } from '$lib/server/config';
@@ -9,6 +10,7 @@ const publicApis = new Set(['/api/session', '/api/join', '/api/health', '/api/ad
 const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 export const handle: Handle = ({ event, resolve }) => withSettings(async () => {
+  await ensureCanonicalFolders();
   event.locals.user = getSession(event.cookies.get(sessionCookieName()));
   const pathname = event.route?.id ?? event.url.pathname.slice(config.basePath.length);
   const isApi = pathname === '/api' || pathname.startsWith('/api/');

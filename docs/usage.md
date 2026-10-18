@@ -4,11 +4,11 @@
 
 ## Join and share
 
-Open the collection link and enter your name. Names match regardless of capitalization or surrounding whitespace. Entering an existing name with a valid group link reuses that contributor and folder, including from a new browser. Existing named directories can be claimed; original files stay in place.
+Open the collection link and enter your name. Names match regardless of capitalization or surrounding whitespace. Entering an existing name with a valid group link reuses that contributor and folder, including from a new browser. Existing named directories can be claimed; their originals are preserved when capitalization is normalized.
 
 Everyone signed in can view and download the whole collection and upload into their personal folder. Names are labels, not passwords: the collection link authorizes claiming a contributor. Use Gather with trusted groups. Personal invitations can be created or replaced by the administrator.
 
-Click your name to change it. Renaming keeps your folder and photos; another contributor's name cannot be reused through the rename dialog. Legacy duplicate contributors are grouped without moving their originals.
+Click your name to change it. Each person has one folder named after them, with its first letter capitalized. Changing your name renames that folder and requests an Immich rescan. Existing duplicate folders are combined without overwriting files; old folder aliases are removed. Another contributor's name cannot be reused through the rename dialog.
 
 ## Upload or import
 
@@ -40,7 +40,7 @@ History is per contributor identity and collection. Downloading one person's pho
 
 Use the trash icon in the viewer or photo details, or select your photos and use the trash icon beside Download. Confirming permanently removes those originals from the shared folder for everyone. Mixed selections containing another contributor's photos cannot be deleted. Read-only collections disable deletion.
 
-Ownership follows the signed-in contributor's folders, including legacy aliases, rather than the uploader or filename. Gather is for trusted groups: a valid shared link can claim an existing contributor name and control that contributor's originals. Names are not passwords.
+Ownership follows the signed-in contributor's single folder, rather than the uploader or filename. Gather is for trusted groups: a valid shared link can claim an existing contributor name and control that contributor's originals. Names are not passwords.
 
 ## Limits
 

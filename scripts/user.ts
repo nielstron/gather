@@ -1,9 +1,10 @@
 import { createMember, listMembers, revokeMember, rotateMember } from '../src/lib/server/auth';
+import { ensureCanonicalFolders } from '../src/lib/server/contributor-folders';
 import { config } from '../src/lib/server/config';
 
 const [command, folder, ...nameParts] = process.argv.slice(2);
 
-function printInvitation(result: ReturnType<typeof createMember>) {
+function printInvitation(result: Awaited<ReturnType<typeof createMember>>) {
   const invitation = new URL(`${config.basePath}/`, config.origin);
   invitation.hash = `invite=${result.token}`;
   console.log(`${result.member.name} → ${result.member.folder}/`);
@@ -12,10 +13,11 @@ function printInvitation(result: ReturnType<typeof createMember>) {
 }
 
 try {
+  await ensureCanonicalFolders();
   switch (command) {
     case 'add':
-      if (!folder || !nameParts.length) throw new Error('Usage: npm run user -- add alice "Alice"');
-      printInvitation(createMember(nameParts.join(' '), folder));
+      if (!folder) throw new Error('Usage: npm run user -- add "Alice"');
+      printInvitation(await createMember([folder, ...nameParts].join(' ')));
       break;
     case 'rotate':
       if (!folder || nameParts.length) throw new Error('Usage: npm run user -- rotate alice');
@@ -30,12 +32,12 @@ try {
     case 'list': {
       if (folder) throw new Error('Usage: npm run user -- list');
       const members = listMembers();
-      if (!members.length) console.log('No members yet. Add one with: npm run user -- add alice "Alice"');
+      if (!members.length) console.log('No members yet. Add one with: npm run user -- add "Alice"');
       else console.table(members.map(({ folder, name }) => ({ folder, name })));
       break;
     }
     default:
-      throw new Error('Usage: npm run user -- add <folder> <name> | rotate <folder> | revoke <folder> | list');
+      throw new Error('Usage: npm run user -- add <name> | rotate <folder> | revoke <folder> | list');
   }
 } catch (error) {
   console.error(error instanceof Error ? error.message : 'The member command failed.');

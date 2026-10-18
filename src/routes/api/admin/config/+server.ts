@@ -73,8 +73,8 @@ export const POST: RequestHandler = async ({ request }) => {
       case 'rotate-share': link = invitation(rotateShareLink(), 'share'); message = 'Previous shared links and their guest sessions were revoked.'; break;
       case 'revoke-share': revokeShareLink(); message = 'Shared link revoked. Shared-link guests have been signed out.'; break;
       case 'create-member': {
-        if (typeof body.name !== 'string' || typeof body.folder !== 'string') throw new Error('Enter a name and folder.');
-        link = invitation(createMember(body.name, body.folder).token, 'invite');
+        if (typeof body.name !== 'string') throw new Error('Enter a name.');
+        link = invitation((await createMember(body.name)).token, 'invite');
         invalidatePhotos();
         break;
       }

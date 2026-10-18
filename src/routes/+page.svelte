@@ -224,7 +224,11 @@
       const refreshedPhotos = pages.flatMap(page => page.photos);
       const result = pages[pages.length - 1];
       photos = append ? [...existingPhotos, ...refreshedPhotos] : refreshedPhotos;
-      data = { ...data, members: result.members };
+      const currentUser = result.members.find(member => member.id === data.user?.id) || data.user;
+      if (folder && data.user && currentUser && requestedFolder.toLowerCase() === data.user.folder.toLowerCase() && currentUser.folder !== data.user.folder) {
+        folder = currentUser.folder; data = { ...data, user: currentUser, members: result.members }; void loadPhotos(); return;
+      }
+      data = { ...data, user: currentUser, members: result.members };
       folders = result.folders;
       total = result.total;
       hasMore = result.hasMore;
@@ -337,6 +341,7 @@
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || 'Your name could not be saved. Please try again.');
       const user = body.user as Member;
+      if (folder && folder.toLowerCase() === data.user?.folder.toLowerCase()) folder = user.folder;
       data = { ...data, user, members: data.members.map((member) => member.id === user.id ? user : member) };
       profileDialog.close();
       await loadPhotos();
@@ -818,12 +823,13 @@
     <button class="icon-button dialog-close" on:click={() => profileDialog.close()} aria-label="Close name settings" disabled={savingProfile}><Icon name="close" /></button>
     <span class="profile-dialog-icon"><Icon name="user" size={26} /></span>
     <h2 id="profile-heading">Make yourself at home</h2>
-    <p>This is the name everyone sees beside your photos. Your uploads stay in the same folder.</p>
+    <p>This is the name everyone sees beside your photos. Your folder is renamed to match, and Immich rescans it.</p>
+    {#if data.readOnly}<p>Names and folders cannot be changed in this read-only collection.</p>{:else if activeUploads}<p>Finish your uploads before changing your name.</p>{/if}
     <form on:submit|preventDefault={saveProfile}>
       <label for="profile-name">Display name</label>
-      <input id="profile-name" type="text" bind:value={profileName} autocomplete="given-name" maxlength="80" required disabled={savingProfile} />
+      <input id="profile-name" type="text" bind:value={profileName} autocomplete="given-name" maxlength="80" required disabled={savingProfile || data.readOnly || !!activeUploads} />
       {#if profileError}<p class="form-error" role="alert">{profileError}</p>{/if}
-      <Button type="submit" class="primary-button" loading={savingProfile} disabled={!profileName.trim() || savingProfile}>Save name</Button>
+      <Button type="submit" class="primary-button" loading={savingProfile} disabled={!profileName.trim() || savingProfile || data.readOnly || !!activeUploads}>Save name</Button>
     </form>
     <button class="text-button profile-sign-out" on:click={signOut} disabled={savingProfile}><Icon name="logout" size={17} />Sign out</button>
   </dialog>

@@ -5,6 +5,7 @@
   import { collectionBase, collectionPath } from '$lib/collection-path';
   $: base = collectionBase($page.url.pathname, appBase);
 
+  import { contributorFolder } from '$lib/contributor-folder';
   type Settings = { readOnly: boolean; collectionName: string; photoRoot: string; immichUrl: string; immichLibraryId: string; immichPhotoRoot: string; immichApiKey: string; immichScanApiKey: string };
   type Member = { id: string; name: string; folder: string; active: number; shared: number };
   type Overview = { collectionId: string; collections: { id: string; name: string; photoRoot: string }[]; settings: Omit<Settings, 'immichApiKey' | 'immichScanApiKey'>; automaticImmichPath: boolean; allowedRoot: string; basePath: string; origin: string; previewKeyConfigured: boolean; scanKeyConfigured: boolean; sharedLinkActive: boolean; members: Member[] };
@@ -15,6 +16,7 @@
   let confirmFolderChange = false;
   let browserOpen = false, browsingFolder = '', directories: string[] = [];
   let memberName = '', memberFolder = '', copied = false;
+  $: memberFolder = (() => { try { return memberName.trim() ? contributorFolder(memberName) : ''; } catch { return ''; } })();
   let creatingCollection = false, newCollectionName = '', newCollectionRoot = '', inheritConnection = true;
   let browserTarget: 'current' | 'new' = 'current';
   let tab: 'collection' | 'access' = 'collection';
@@ -175,7 +177,7 @@
         {#if generatedLink}<section class="card invitation"><h2>Your invitation is ready.</h2><p>Copy it now and keep it somewhere private. It cannot be retrieved later.</p><div class="input-row"><input aria-label="Generated invitation link" readonly value={generatedLink} on:focus={(event) => event.currentTarget.select()} /><button class="primary" on:click={copyLink}>{copied ? 'Copied ✓' : 'Copy link'}</button></div><a href={generatedLink} target="_blank" rel="noreferrer">Open invitation ↗</a></section>{/if}
         <section class="card">
           <div class="section-heading"><span class="step">＋</span><div><h2>A personal invitation</h2><p>Give someone upload access to a specific folder. They can still view and download the whole collection.</p></div></div>
-          <form on:submit|preventDefault={() => action('create-member', { name: memberName, folder: memberFolder })}><div class="two-columns"><label>Display name<input bind:value={memberName} required maxlength="80" placeholder="Niels" /></label><label>Upload folder<input aria-label="Upload folder" bind:value={memberFolder} required pattern={'[A-Za-z0-9][A-Za-z0-9-]{0,47}'} maxlength="48" placeholder="Niels" /><small>Existing folders are matched regardless of capitalization. Enter a new name to create a folder. Letters, digits, and hyphens only.</small></label></div><button class="secondary" type="submit" disabled={busy}>Create personal invitation</button></form>
+          <form on:submit|preventDefault={() => action('create-member', { name: memberName })}><div class="two-columns"><label>Display name<input bind:value={memberName} required maxlength="80" placeholder="Niels" /></label><label>Upload folder<input aria-label="Upload folder" value={memberFolder} readonly placeholder="Niels" /><small>One capitalized folder per person. Changing their name renames this folder.</small></label></div><button class="secondary" type="submit" disabled={busy}>Create personal invitation</button></form>
         </section>
         <section class="card"><h2>People with access</h2><p class="muted">Revoking access preserves their folder and all originals. A revoked guest can rejoin with an active shared link.</p>{#if !overview.members.length}<div class="empty">Your people will appear here when they join.</div>{/if}{#each overview.members as member}<div class="member"><span class="avatar">{member.name.slice(0, 1).toUpperCase()}</span><div class="member-name"><strong>{member.name}</strong><small>{member.folder}/ · {member.active ? member.shared ? 'Shared link' : 'Personal invitation' : 'Revoked'}</small></div><button class="quiet" disabled={busy} on:click={() => { if (confirm(`Create a replacement invitation for ${member.name} and sign out their current sessions?`)) action('rotate-member', { folder: member.folder }); }}>New invitation</button>{#if member.active}<button class="danger" disabled={busy} on:click={() => { if (confirm(`Revoke access for ${member.name}? Their photos will be preserved.`)) action('revoke-member', { folder: member.folder }); }}>Revoke</button>{/if}</div>{/each}</section>
       {/if}

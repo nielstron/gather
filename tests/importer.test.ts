@@ -21,7 +21,7 @@ const image = (index: number) => new Response(new Uint8Array(buffers[index]), { 
 async function isolated(work: (member: import('../src/lib/types').Member) => Promise<void>) {
   const root = path.join(directory, `collection-${Math.random().toString(36).slice(2)}`); mkdirSync(root);
   const id = settings.createCollection({ ...settings.readSettings(), photoRoot: root, immichUrl: '', immichApiKey: '', immichScanApiKey: '' });
-  await settings.withSettings(async () => { await work(auth.createMember('Visitor', 'Visitor').member); }, id);
+  await settings.withSettings(async () => { await work((await auth.createMember('Visitor')).member); }, id);
 }
 
 test('previews require explicit start; imports run concurrently and repeat imports skip before downloading', async () => isolated(async member => {
@@ -36,7 +36,7 @@ test('previews require explicit start; imports run concurrently and repeat impor
   const preview = await service.preview(member, album.url);
   assert.equal(preview.total, 2); assert.equal(downloads, 0);
   assert.equal((await readdir(path.join(settings.readSettings().photoRoot, member.folder))).length, 0);
-  const other = auth.createMember('Other visitor', 'Other').member;
+  const other = (await auth.createMember('Other visitor')).member;
   assert.throws(() => service.start(other, preview.id), /not found/);
   assert.throws(() => service.cancel(other, preview.id), /not found/);
   assert.deepEqual(service.list(other), []);

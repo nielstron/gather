@@ -15,7 +15,7 @@ export const POST: RequestHandler = async ({ request, cookies, getClientAddress 
     return json({ error: 'Open the shared link and enter your name.' }, { status: 400 });
   }
   try {
-    const result = joinCollection(body.token, body.name);
+    const result = await joinCollection(body.token, body.name);
     setSessionCookie(cookies, result.sessionToken);
     invalidatePhotos();
     return json({ user: result.member });

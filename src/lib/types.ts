@@ -1,4 +1,4 @@
-export type Member = { id: string; name: string; folder: string; folders?: string[] };
+export type Member = { id: string; name: string; folder: string };
 export type Photo = {
   duplicate?: boolean;
   revision?: string;

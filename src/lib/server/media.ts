@@ -10,6 +10,8 @@ import { readSettings, currentCollectionId } from './settings';
 import { config } from './config';
 import { readFileChecksum, writeFileChecksum, listMembers, forgetDeletedPhotos } from './auth';
 import { createLimiter, createWeightedLimiter, runConcurrentQueue, mapConcurrent } from '../async';
+import { fileRevision } from './photo-version';
+import { withContributorFiles } from './contributor-lock';
 import type { Member, Photo } from '../types';
 
 const extensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif', '.tif', '.tiff', '.heic', '.heif']);
@@ -69,7 +71,7 @@ async function checkedDirectory(parts: string[]) {
 }
 
 function photoRevision(relative: string, stat: { size: number; mtimeMs: number; ctimeMs: number }) {
-  return createHash('sha256').update(JSON.stringify([config.photoRoot, relative, stat.size, stat.mtimeMs, stat.ctimeMs])).digest('base64url').slice(0, 20);
+  return fileRevision(config.photoRoot, relative, stat);
 }
 
 export async function openPhoto(id: string): Promise<{ handle: FileHandle; relative: string; bytes: number; modifiedAt: Date; revision: string }> {
@@ -102,7 +104,7 @@ export function invalidatePhotos() { const state = scanState(); state.generation
 export async function scanPhotos(members: Member[], allowStale = false): Promise<Photo[]> {
   const state = scanState();
   const attribute = (photos: Photo[]) => {
-    const owners = new Map(members.flatMap(member => [member.folder, ...(member.folders || [])].map(folder => [folder.toLowerCase(), member] as const)));
+    const owners = new Map(members.map(member => [member.folder.toLowerCase(), member] as const));
     return photos.filter(photo => (!state.removed?.has(photo.id) || state.removed.get(photo.id) !== photo.revision)).map(photo => {
       const originalFolder = decodeId(photo.id).split('/').length > 1 ? decodeId(photo.id).split('/')[0] : '';
       const member = owners.get(originalFolder.toLowerCase());
@@ -201,6 +203,9 @@ export async function duplicatePhoto(checksum: string, size: number, signal?: Ab
 let uploadCount = 0;
 
 export async function saveUpload(member: Member, name: string, body: ReadableStream<Uint8Array> | null, signal?: AbortSignal): Promise<Photo> {
+  return withContributorFiles(member.id, () => saveUploadInFolder(listMembers().find(person => person.id === member.id) || member, name, body, signal));
+}
+async function saveUploadInFolder(member: Member, name: string, body: ReadableStream<Uint8Array> | null, signal?: AbortSignal): Promise<Photo> {
   validateFilename(name);
   if (!body) throw new MediaError(400, 'No file was provided');
   if ((activeUploads.get(member.id) || 0) >= 2 || uploadCount >= 8) throw new MediaError(429, 'Please wait for the current uploads to finish');
@@ -315,11 +320,14 @@ export type DeletePhoto = { id: string; revision: string };
 
 /** Authorize the whole request before touching any original. File contents are never read. */
 export async function deletePhotos(member: Member, input: unknown) {
+  return withContributorFiles(member.id, () => deletePhotosInFolder(member, input));
+}
+async function deletePhotosInFolder(member: Member, input: unknown) {
   if (readSettings().readOnly) throw new MediaError(403, 'This collection is read-only.');
   const owner = listMembers().find(person => person.id === member.id);
   if (!owner) throw new MediaError(403, 'You can only delete your own photos.');
   if (!Array.isArray(input) || !input.length || input.length > 200) throw new MediaError(400, 'Select between 1 and 200 photos to delete.');
-  const folders = new Set([owner.folder, ...(owner.folders || [])].map(folder => folder.toLowerCase()));
+  const folders = new Set([owner.folder.toLowerCase()]);
   const targets = new Map<string, DeletePhoto & { relative: string }>();
   for (const item of input) {
     if (!item || typeof item.id !== 'string' || typeof item.revision !== 'string' || !/^[A-Za-z0-9_-]{20}$/.test(item.revision)) throw new MediaError(400, 'Select photos with their current versions.');

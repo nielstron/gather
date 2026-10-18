@@ -10,7 +10,7 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
   const body = await readAuthJson(request);
   if (typeof body?.name !== 'string') return json({ error: 'Enter your display name.' }, { status: 400 });
   try {
-    const member = renameMember(locals.user.id, body.name);
+    const member = await renameMember(locals.user.id, body.name);
     locals.user = member;
     invalidatePhotos();
     return json({ user: member });

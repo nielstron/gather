@@ -18,8 +18,8 @@ const media = await import('../src/lib/server/media');
 after(() => rmSync(directory, { recursive: true, force: true }));
 let id = '', defaultSession = '', secondSession = '', defaultInvite = '', shared = '';
 
-test('existing settings, identities, sessions, and invitations remain in the default collection', () => {
-  const member = auth.createMember('Niels', 'Niels');
+test('existing settings, identities, sessions, and invitations remain in the default collection', async () => {
+  const member = (await auth.createMember('Niels'));
   defaultInvite = member.token;
   defaultSession = auth.exchangeInvite(member.token)!.sessionToken;
   shared = auth.createShareLink();
@@ -38,11 +38,11 @@ test('each collection isolates members, identical folder names, invitation token
     assert.equal(auth.listMembers().length, 0);
     assert.equal(auth.getSession(defaultSession), null);
     assert.equal(auth.exchangeInvite(defaultInvite), null);
-    assert.throws(() => auth.joinCollection(shared, 'Outsider'), (error: any) => error.status === 401);
-    const member = auth.createMember('Another Niels', 'Niels');
+    (await assert.rejects(async () => (await auth.joinCollection(shared, 'Outsider')), (error: any) => error.status === 401));
+    const member = (await auth.createMember('Niels'));
     secondSession = auth.exchangeInvite(member.token)!.sessionToken;
     assert.equal(auth.listMembers().length, 1);
-    assert.equal(auth.getSession(secondSession)?.name, 'Another Niels');
+    assert.equal(auth.getSession(secondSession)?.name, 'Niels');
     assert.notEqual(settings.sessionCookieName(), 'gather_session');
     await Promise.resolve();
     assert.equal(settings.readSettings().collectionName, 'Another trip');
@@ -63,7 +63,7 @@ test('concurrent collection requests keep their settings, gallery scans, media p
     await Promise.all(['default', id].map((collection, index) => settings.withSettings(async () => {
       const photos = await media.scanPhotos(auth.listMembers());
       assert.equal(photos.length, 1);
-      assert.equal(photos[0].owner, index ? 'Another Niels' : 'Niels');
+      assert.equal(photos[0].owner, index ? 'Niels' : 'Niels');
       const file = await media.openPhoto(photos[0].id);
       try { assert.deepEqual(await file.handle.readFile(), images[index]); }
       finally { await file.handle.close(); }

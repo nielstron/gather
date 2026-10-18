@@ -51,16 +51,16 @@ test('folder selection stays within allowed root, excludes symlinks and configur
   assert.equal(admin.validateSettings({ ...saved, immichApiKey: '' }).immichApiKey, 'preview-secret');
 });
 
-test('switching a collection revokes every guest identity and invitation while preserving directories', () => {
+test('switching a collection revokes every guest identity and invitation while preserving directories', async () => {
   const shared = auth.createShareLink();
-  const guest = auth.joinCollection(shared, 'Guest');
-  const personal = auth.createMember('Niels', 'Niels');
+  const guest = (await auth.joinCollection(shared, 'Guest'));
+  const personal = (await auth.createMember('Niels'));
   const individual = auth.exchangeInvite(personal.token)!;
   auth.resetCollectionAccess();
   assert.equal(auth.getSession(guest.sessionToken), null);
   assert.equal(auth.getSession(individual.sessionToken), null);
   assert.equal(auth.exchangeInvite(personal.token), null);
-  assert.throws(() => auth.joinCollection(shared, 'Another guest'), /revoked/);
+  (await assert.rejects(async () => (await auth.joinCollection(shared, 'Another guest')), /revoked/));
   assert.equal(existsSync(path.join(process.env.PHOTO_ROOT!, 'Niels')), true);
 });
 

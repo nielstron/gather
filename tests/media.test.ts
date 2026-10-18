@@ -260,7 +260,7 @@ test('preview snapshots reject hidden and symlink paths and track file revisions
 test('authenticated previews retain private caching while originals and rejected requests stay uncached', async () => {
   const auth = await import('../src/lib/server/auth');
   const { handle } = await import('../src/hooks.server');
-  const invitation = auth.createMember('Cache visitor', 'cache-visitor');
+  const invitation = (await auth.createMember('Cache visitor'));
   const session = auth.exchangeInvite(invitation.token)!;
   async function request(contentType: string, authenticated: boolean) {
     const url = new URL('http://localhost:5173/api/media/photo');

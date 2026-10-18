@@ -47,13 +47,13 @@ test.beforeAll(async () => {
   process.env.DATA_ROOT = path.join(directory, 'data');
   const auth = await import('../src/lib/server/auth');
   token = auth.createShareLink();
-  auth.createMember('Host', 'host');
-  auth.createMember('Bob', 'bob');
+  (await auth.createMember('Host'));
+  (await auth.createMember('Bob'));
   const colors = ['#476a81', '#b1ad86', '#c58f72'];
   const sizes = [{ width: 900, height: 600 }, { width: 400, height: 700 }, { width: 1200, height: 240 }];
   for (let index = 0; index < colors.length; index++) {
     const photo = await sharp({ create: { ...sizes[index], channels: 3, background: colors[index] } }).jpeg().toBuffer();
-    const filename = path.join(directory, 'photos', index === 2 ? 'bob' : 'host', `weekend-${index}.jpg`);
+    const filename = path.join(directory, 'photos', index === 2 ? 'Bob' : 'Host', `weekend-${index}.jpg`);
     await writeFile(filename, photo);
     const modifiedAt = new Date(index === 2 ? '2024-01-02T12:00:00Z' : `2024-01-03T${12 + index}:00:00Z`);
     await utimes(filename, modifiedAt, modifiedAt);
@@ -222,9 +222,9 @@ test('shared link, editable names, private gallery, Immich scan, uploads and ori
   const login = await bob.request.post(`${origin}${basePath}/api/join`, { headers: { origin }, data: { token, name: 'Bob' } });
   expect(login.status()).toBe(200);
   const bobFolder = (await login.json()).user.folder;
-  expect(bobFolder).toBe('bob');
+  expect(bobFolder).toBe('Bob');
   const returning = await bob.request.post(`${origin}${basePath}/api/join`, { headers: { origin }, data: { token, name: ' bOB ' } });
-  expect((await returning.json()).user.folder).toBe('bob');
+  expect((await returning.json()).user.folder).toBe('Bob');
   const members = (await (await bob.request.get(`${origin}${basePath}/api/photos`)).json()).members;
   expect(members.filter((member: any) => member.name.toLowerCase() === 'bob')).toHaveLength(1);
   const bobUpload = await bob.request.post(`${origin}${basePath}/api/upload?folder=alice`, { headers: { origin, 'x-filename': 'bobs-photo.png', 'content-type': 'application/octet-stream' }, data: await sharp({ create: { width: 320, height: 240, channels: 3, background: '#9dbdb0' } }).png().toBuffer() });
@@ -232,7 +232,7 @@ test('shared link, editable names, private gallery, Immich scan, uploads and ori
   expect((await bobUpload.json()).photo.folder).toBe(bobFolder);
   expect((await bob.request.get(`${origin}${basePath}/api/media/${uploaded.id}?kind=original`)).status()).toBe(200);
   await bob.close();
-  await rm(path.join(directory, 'photos', 'bob', 'bobs-photo.png'));
+  await rm(path.join(directory, 'photos', 'Bob', 'bobs-photo.png'));
   await page.request.get(`${origin}${basePath}/api/photos?refresh=1`);
 
   await page.getByRole('button', { name: 'Close uploads', exact: true }).click();
@@ -245,7 +245,8 @@ test('shared link, editable names, private gallery, Immich scan, uploads and ori
     const data = await (await page.request.get(`${origin}${basePath}/api/photos`)).json();
     return data.photos.find((photo: { name: string }) => photo.name === 'new-memory.png')?.owner;
   }).toBe('Alicia');
-  expect((await readFile(path.join(directory, 'photos', aliceFolder, 'new-memory.png'))).equals(payload)).toBe(true);
+  expect((await readFile(path.join(directory, 'photos', 'Alicia', 'new-memory.png'))).equals(payload)).toBe(true);
+  expect(await readdir(path.join(directory, 'photos'))).not.toContain(aliceFolder);
   await page.reload();
   await expect(page.getByRole('region', { name: 'Photo collection', exact: true })).toBeVisible();
 
@@ -300,7 +301,7 @@ test('administrator configures a collection and invitations through the UI', asy
   expect(saved.settings.immichApiKey).toBeUndefined();
   expect(saved.settings.immichScanApiKey).toBeUndefined();
   await page.getByRole('button', { name: 'Choose a different folder' }).click();
-  await expect(page.getByRole('button', { name: '▱ host →', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '▱ Host →', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Close', exact: true }).click();
   await page.getByRole('button', { name: 'People & invitations', exact: true }).click();
   page.once('dialog', dialog => dialog.accept());
@@ -308,7 +309,7 @@ test('administrator configures a collection and invitations through the UI', asy
   const invitation = page.getByRole('textbox', { name: 'Generated invitation link' });
   await expect(invitation).toHaveValue(new RegExp(`${basePath}/#share=`));
   await page.getByLabel('Display name', { exact: true }).fill('Niels');
-  await page.getByLabel('Upload folder', { exact: true }).fill('Niels');
+  await expect(page.getByLabel('Upload folder', { exact: true })).toHaveValue('Niels');
   await page.getByRole('button', { name: 'Create personal invitation', exact: true }).click();
   await expect(invitation).toHaveValue(new RegExp(`${basePath}/#invite=`));
   await expect(page.getByText('Niels/', { exact: false })).toBeVisible();
@@ -325,7 +326,7 @@ test('administrator configures a collection and invitations through the UI', asy
 
 test('a stalled gallery request stops loading and offers a working retry', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const invitation = auth.createMember('Slow connection', 'slow-connection');
+  const invitation = (await auth.createMember('Slow connection'));
   let unblock!: () => void;
   let requested!: () => void;
   const pending = new Promise<void>(resolve => { requested = resolve; });
@@ -350,7 +351,7 @@ test('a stalled gallery request stops loading and offers a working retry', async
 
 test('two uploads start together instead of waiting for each other', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const invitation = auth.createMember('Parallel uploads', 'parallel-uploads');
+  const invitation = (await auth.createMember('Parallel uploads'));
   await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
   await expect(page.locator('.photo-tile').first()).toBeVisible();
   const payload = await sharp({ create: { width: 20, height: 20, channels: 3, background: `#${createHash('sha256').update(test.info().title).digest('hex').slice(0,6)}` } }).png().toBuffer();
@@ -375,7 +376,7 @@ test('two uploads start together instead of waiting for each other', async ({ pa
 
 test('interrupted uploads retry automatically and a lost success response does not duplicate the file', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const invitation = auth.createMember('Retry uploads', 'retry-uploads');
+  const invitation = (await auth.createMember('Retry uploads'));
   await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
   await expect(page.locator('.photo-tile').first()).toBeVisible();
   const payload = await sharp({ create: { width: 20, height: 20, channels: 3, background: `#${createHash('sha256').update(test.info().title).digest('hex').slice(0,6)}` } }).png().toBuffer();
@@ -398,19 +399,19 @@ test('interrupted uploads retry automatically and a lost success response does n
   await expect(page.locator('.upload-panel')).toContainText('Already in collection · skipped', { timeout: 15_000 });
   expect(attempts).toBe(2);
   expect(new Set(identifiers).size).toBe(1);
-  expect((await readdir(path.join(directory, 'photos', 'retry-uploads'))).filter(name => !name.startsWith('.'))).toEqual(['automatic-retry.png']);
-  expect((await readFile(path.join(directory, 'photos', 'retry-uploads', 'automatic-retry.png'))).equals(payload)).toBe(true);
+  expect((await readdir(path.join(directory, 'photos', 'Retry uploads'))).filter(name => !name.startsWith('.'))).toEqual(['automatic-retry.png']);
+  expect((await readFile(path.join(directory, 'photos', 'Retry uploads', 'automatic-retry.png'))).equals(payload)).toBe(true);
   const collision = await page.request.post(`${origin}${basePath}/api/upload`, { headers: { origin, 'x-filename': 'other.png', 'x-upload-id': identifiers[0], 'x-upload-size': String(payload.length), 'content-type': 'image/png' }, data: payload });
   expect(collision.status()).toBe(409);
   const duplicateHeaders = { origin, 'x-filename': 'concurrent-retry.png', 'x-upload-id': 'concurrent-retry-identifier', 'x-upload-size': String(payload.length), 'content-type': 'image/png' };
   const concurrent = await Promise.all([0, 1].map(() => page.request.post(`${origin}${basePath}/api/upload`, { headers: duplicateHeaders, data: payload })));
   expect(concurrent.map(response => response.status()).sort()).toEqual([200, 200]);
-  expect((await readdir(path.join(directory, 'photos', 'retry-uploads'))).filter(name => name.startsWith('concurrent-retry'))).toEqual([]);
+  expect((await readdir(path.join(directory, 'photos', 'Retry uploads'))).filter(name => name.startsWith('concurrent-retry'))).toEqual([]);
 });
 
 test('a queued automatic retry can be cancelled', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const invitation = auth.createMember('Cancel retry', 'cancel-retry');
+  const invitation = (await auth.createMember('Cancel retry'));
   await page.clock.install();
   await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
   await expect(page.locator('.photo-tile').first()).toBeVisible();
@@ -429,7 +430,7 @@ test('a queued automatic retry can be cancelled', async ({ page }) => {
 
 test('offline uploads resume when the connection returns', async ({ page, context }) => {
   const auth = await import('../src/lib/server/auth');
-  const invitation = auth.createMember('Offline retry', 'offline-retry');
+  const invitation = (await auth.createMember('Offline retry'));
   await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
   await expect(page.locator('.photo-tile').first()).toBeVisible();
   const payload = await sharp({ create: { width: 20, height: 20, channels: 3, background: `#${createHash('sha256').update(test.info().title).digest('hex').slice(0,6)}` } }).png().toBuffer();
@@ -438,12 +439,12 @@ test('offline uploads resume when the connection returns', async ({ page, contex
   await expect(page.locator('.upload-panel')).toContainText('Waiting for connection');
   await context.setOffline(false);
   await expect(page.locator('.upload-panel')).toContainText('Saved · Immich preview processing');
-  expect((await readFile(path.join(directory, 'photos', 'offline-retry', 'offline-retry.png'))).equals(payload)).toBe(true);
+  expect((await readFile(path.join(directory, 'photos', 'Offline retry', 'offline-retry.png'))).equals(payload)).toBe(true);
 });
 
 test('upload actions clear only successes and retry all failed photos together', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const person = auth.createMember('Upload actions', 'upload-actions');
+  const person = (await auth.createMember('Upload actions'));
   const session = auth.exchangeInvite(person.token)!;
   await page.context().addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
   let failing = true;
@@ -469,12 +470,12 @@ test('upload actions clear only successes and retry all failed photos together',
   await expect(panel.getByRole('button', { name: 'Retry all', exact: true })).toBeDisabled();
   await panel.getByRole('button', { name: 'Clear successful', exact: true }).click();
   await expect(panel).not.toBeVisible();
-  expect((await readdir(path.join(directory, 'photos', 'upload-actions'))).filter(name => !name.startsWith('.')).sort()).toEqual(['another-failed.png', 'failed.png', 'successful.png']);
+  expect((await readdir(path.join(directory, 'photos', 'Upload actions'))).filter(name => !name.startsWith('.')).sort()).toEqual(['another-failed.png', 'failed.png', 'successful.png']);
 });
 
 test('automatic retries stop after five retries and permanent errors do not retry', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const invitation = auth.createMember('Retry limit', 'retry-limit');
+  const invitation = (await auth.createMember('Retry limit'));
   await page.clock.install();
   await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
   await expect(page.locator('.photo-tile').first()).toBeVisible();
@@ -500,7 +501,7 @@ test('automatic retries stop after five retries and permanent errors do not retr
 
 test('a stalled transfer retries after its inactivity timeout', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const invitation = auth.createMember('Stalled retry', 'stalled-retry');
+  const invitation = (await auth.createMember('Stalled retry'));
   await page.clock.install();
   await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
   await expect(page.locator('.photo-tile').first()).toBeVisible();
@@ -525,7 +526,7 @@ test('a stalled transfer retries after its inactivity timeout', async ({ page })
 
 test('search remains responsive while image connections are stalled', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const invitation = auth.createMember('Responsive search', 'responsive-search');
+  const invitation = (await auth.createMember('Responsive search'));
   await indexFiles();
   let release!: () => void;
   thumbnailGate = new Promise<void>(resolve => { release = resolve; });
@@ -547,7 +548,7 @@ test('search remains responsive while image connections are stalled', async ({ p
 
 test('new searches abort previous searches instead of leaving them queued', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const invitation = auth.createMember('Cancel search', 'cancel-search');
+  const invitation = (await auth.createMember('Cancel search'));
   await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
   await expect(page.locator('.photo-tile').first()).toBeVisible();
   let release!: () => void, started!: () => void;
@@ -573,10 +574,10 @@ test('new searches abort previous searches instead of leaving them queued', asyn
 
 test('uploading an existing file under a new name sends only its hash and skips the file transfer', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const invitation = auth.createMember('Duplicate uploads', 'duplicate-uploads');
+  const invitation = (await auth.createMember('Duplicate uploads'));
   await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
   await expect(page.locator('.photo-tile').first()).toBeVisible();
-  const payload = await readFile(path.join(directory, 'photos', 'host', 'weekend-0.jpg'));
+  const payload = await readFile(path.join(directory, 'photos', 'Host', 'weekend-0.jpg'));
   let transfers = 0;
   const checks: unknown[] = [];
   page.on('request', request => {
@@ -587,13 +588,13 @@ test('uploading an existing file under a new name sends only its hash and skips 
   await expect(page.locator('.upload-panel')).toContainText('Already in collection · skipped');
   expect(transfers).toBe(0);
   expect(checks).toEqual([{ checksum: createHash('sha256').update(payload).digest('hex'), size: payload.length }]);
-  expect((await readdir(path.join(directory, 'photos', 'duplicate-uploads'))).filter(name=>!name.startsWith('.'))).toEqual([]);
+  expect((await readdir(path.join(directory, 'photos', 'Duplicate uploads'))).filter(name=>!name.startsWith('.'))).toEqual([]);
 });
 
 
 test('the viewer reuses cached thumbnails on opening and swiping, then upgrades on zoom without moving the image', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const invitation = auth.createMember('Progressive viewer', 'progressive-viewer');
+  const invitation = (await auth.createMember('Progressive viewer'));
   await page.setViewportSize({width:390,height:844});
   await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
   const photo = (name: string) => page.locator('.photo-open').filter({has:page.locator(`img[alt="${name}"]`)});
@@ -650,7 +651,7 @@ test('the viewer reuses cached thumbnails on opening and swiping, then upgrades 
 
 test('failed preview and full-size upgrades keep the cached thumbnail visible',async ({page})=>{
   const auth=await import('../src/lib/server/auth');
-  const invitation=auth.createMember('Viewer fallback','viewer-fallback');
+  const invitation=(await auth.createMember('Viewer fallback'));
   await page.setViewportSize({width:390,height:844});
   await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
   const photo=page.locator('.photo-open').filter({has:page.locator('img[alt="weekend-0.jpg"]')});
@@ -679,7 +680,7 @@ test('failed preview and full-size upgrades keep the cached thumbnail visible',a
 
 test('identical queued files transfer once and duplicate checks reject invalid or unauthenticated requests', async ({ page, request }) => {
   const auth = await import('../src/lib/server/auth');
-  const invitation = auth.createMember('Hash queue', 'hash-queue');
+  const invitation = (await auth.createMember('Hash queue'));
   const endpoint = `${origin}${basePath}/api/upload/check`;
   expect((await request.post(endpoint, { headers: { origin }, data: { checksum: 'a'.repeat(64), size: 10 } })).status()).toBe(401);
   await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
@@ -697,12 +698,12 @@ test('identical queued files transfer once and duplicate checks reject invalid o
   ]);
   await expect(page.locator('.upload-panel')).toContainText('2 of 2 finished · 1 skipped');
   expect(transfers).toBe(1);
-  expect((await readdir(path.join(directory, 'photos', 'hash-queue'))).filter(name => !name.startsWith('.'))).toHaveLength(1);
+  expect((await readdir(path.join(directory, 'photos', 'Hash queue'))).filter(name => !name.startsWith('.'))).toHaveLength(1);
 });
 
 test('duplicate checks retry before sending any file and can be cancelled', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const invitation = auth.createMember('Hash retry', 'hash-retry');
+  const invitation = (await auth.createMember('Hash retry'));
   await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
   await expect(page.locator('.photo-tile').first()).toBeVisible();
   let checks = 0, transfers = 0;
@@ -712,7 +713,7 @@ test('duplicate checks retry before sending any file and can be cancelled', asyn
     if (checks === 1) await route.abort();
     else await route.continue();
   });
-  const payload = await readFile(path.join(directory, 'photos', 'host', 'weekend-0.jpg'));
+  const payload = await readFile(path.join(directory, 'photos', 'Host', 'weekend-0.jpg'));
   await page.locator('input[type="file"]').setInputFiles({ name: 'hash-retry.jpg', mimeType: 'image/jpeg', buffer: payload });
   await expect(page.locator('.upload-panel')).toContainText('Duplicate check interrupted. Retrying automatically');
   await expect(page.locator('.upload-panel')).toContainText('Already in collection · skipped');
@@ -734,7 +735,7 @@ test('duplicate checks retry before sending any file and can be cancelled', asyn
 
 test('search defaults to semantic relevance, combines people and conditions, and keeps filename search available', async ({ page, request }) => {
   const auth = await import('../src/lib/server/auth');
-  const invitation = auth.createMember('Semantic search', 'semantic-search');
+  const invitation = (await auth.createMember('Semantic search'));
   const smartRequests: Record<string, any>[] = [];
   // Observe the private Gather request; upstream credentials never reach the browser.
   page.on('request', request => {
@@ -818,7 +819,7 @@ test('search defaults to semantic relevance, combines people and conditions, and
 
 test('search tools stay in view after scrolling and people remain usable while portraits are stalled', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const invite = auth.createMember('Scrolled search', 'scrolled-search');
+  const invite = (await auth.createMember('Scrolled search'));
   const session = auth.exchangeInvite(invite.token)!;
   await page.context().addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
   let release!: () => void;
@@ -861,7 +862,7 @@ test('search tools stay in view after scrolling and people remain usable while p
 
 test('a large upload resumes from its saved byte offset after leaving and reopening the page', async ({ page, request }) => {
   const auth = await import('../src/lib/server/auth');
-  const invitation = auth.createMember('Resume chunks', 'resume-chunks');
+  const invitation = (await auth.createMember('Resume chunks'));
   const session = auth.exchangeInvite(invitation.token)!;
   await page.context().addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
   expect((await request.put(`${origin}${basePath}/api/upload/resumable/unauthorized-upload`, { headers: { origin }, data: {} })).status()).toBe(401);
@@ -894,7 +895,7 @@ test('a large upload resumes from its saved byte offset after leaving and reopen
     await expect(page.getByText('Keep this tab open and visible until uploads finish.', { exact: true })).toHaveCount(0);
     expect(offsets.filter(offset => offset === 0)).toHaveLength(1);
     expect(new Set(ids).size).toBe(1);
-    expect((await readFile(path.join(directory, 'photos', 'resume-chunks', 'resumed-after-return.png'))).equals(payload)).toBe(true);
+    expect((await readFile(path.join(directory, 'photos', 'Resume chunks', 'resumed-after-return.png'))).equals(payload)).toBe(true);
     await page.reload();
     await expect(page.locator('.photo-tile').first()).toBeVisible();
     await expect(page.locator('.upload-panel')).toHaveCount(0);
@@ -903,8 +904,8 @@ test('a large upload resumes from its saved byte offset after leaving and reopen
 
 test('recovery files belong to the signed-in member and a small interrupted upload survives reload', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const first = auth.exchangeInvite(auth.createMember('Queue owner', 'queue-owner').token)!;
-  const second = auth.exchangeInvite(auth.createMember('Other queue owner', 'queue-other').token)!;
+  const first = auth.exchangeInvite((await auth.createMember('Queue owner')).token)!;
+  const second = auth.exchangeInvite((await auth.createMember('Other queue owner')).token)!;
   const cookie = (session: typeof first) => ({ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` });
   await page.context().addCookies([cookie(first)]);
   const payload = await sharp({ create: { width: 32, height: 31, channels: 3, background: '#a78931' } }).png().toBuffer();
@@ -927,13 +928,13 @@ test('recovery files belong to the signed-in member and a small interrupted uplo
   await page.reload();
   await expect(page.locator('.upload-panel')).toContainText('Saved · Immich preview processing');
   expect(attempts).toBe(2);
-  expect((await readdir(path.join(directory, 'photos', 'queue-other'))).length).toBe(0);
-  expect((await readFile(path.join(directory, 'photos', 'queue-owner', 'private-recovery.png'))).equals(payload)).toBe(true);
+  expect((await readdir(path.join(directory, 'photos', 'Other queue owner'))).length).toBe(0);
+  expect((await readFile(path.join(directory, 'photos', 'Queue owner', 'private-recovery.png'))).equals(payload)).toBe(true);
 });
 
 test('background suspension pauses retries and returning resumes without exhausting the retry budget', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const session = auth.exchangeInvite(auth.createMember('Background resume', 'background-resume').token)!;
+  const session = auth.exchangeInvite((await auth.createMember('Background resume')).token)!;
   await page.context().addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
   await page.clock.install();
   let attempts = 0;
@@ -953,7 +954,7 @@ test('background suspension pauses retries and returning resumes without exhaust
 
 test('imports a Google Photos link through the UI, continues after Back, and skips repeat transfers', async ({ page, request }, testInfo) => {
   const auth = await import('../src/lib/server/auth');
-  const invite = auth.createMember('Album importer', 'album-importer');
+  const invite = (await auth.createMember('Album importer'));
   const session = auth.exchangeInvite(invite.token)!;
   await page.context().addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
   expect((await request.get(`${origin}${basePath}/api/import`)).status()).toBe(401);
@@ -1005,7 +1006,7 @@ test('imports a Google Photos link through the UI, continues after Back, and ski
 
 test('a single iPhone tap on the circle selects and deselects ready and pending photos', async ({ browser }) => {
   const auth = await import('../src/lib/server/auth');
-  const invitation = auth.createMember('Touch selection', 'touch-selection');
+  const invitation = (await auth.createMember('Touch selection'));
   const session = auth.exchangeInvite(invitation.token)!;
   const context = await browser.newContext({ ...devices['iPhone 13'] });
   try {
@@ -1046,7 +1047,7 @@ test('a single iPhone tap on the circle selects and deselects ready and pending 
 
 test('Back closes previews and every modal, and ordinary closes preserve page navigation', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const invite = auth.createMember('Modal navigation', 'modal-navigation');
+  const invite = (await auth.createMember('Modal navigation'));
   const session = auth.exchangeInvite(invite.token)!;
   await page.context().addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
   const previous = `${origin}${basePath}/api/health`;
@@ -1108,11 +1109,11 @@ test('Back closes previews and every modal, and ordinary closes preserve page na
 
 test('download options default to other contributors and remember completed downloads', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const self = auth.createMember('Download self', 'download-self');
-  auth.createMember('Download source', 'download-source');
+  const self = (await auth.createMember('Download self'));
+  (await auth.createMember('Download source'));
   const session = auth.exchangeInvite(self.token)!;
   await page.context().addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
-  for (const folder of ['download-self', 'download-source']) await writeFile(path.join(directory, 'photos', folder, 'download.png'), importImage);
+  for (const folder of ['Download self', 'Download source']) await writeFile(path.join(directory, 'photos', folder, 'download.png'), importImage);
   await indexFiles();
   await page.request.get(`${origin}${basePath}/api/photos?refresh=1`);
   await page.goto(`${origin}${basePath}/`);
@@ -1134,8 +1135,8 @@ test('download options default to other contributors and remember completed down
   await dialog.getByRole('button', { name: 'Download', exact: true }).click();
   const download = await downloading;
   const archive = await readFile((await download.path())!);
-  expect(archive.includes(Buffer.from('download-source/download.png'))).toBe(true);
-  expect(archive.includes(Buffer.from('download-self/download.png'))).toBe(false);
+  expect(archive.includes(Buffer.from('Download source/download.png'))).toBe(true);
+  expect(archive.includes(Buffer.from('Download self/download.png'))).toBe(false);
   await dialog.getByRole('button', { name: 'Close download options' }).click();
   await page.getByRole('button', { name: 'Download photos', exact: true }).click();
   await dialog.getByRole('button', { name: 'Select all contributors', exact: true }).click();
@@ -1154,10 +1155,10 @@ test('download options default to other contributors and remember completed down
 
 test('search shortcuts toggle closed and newly added old photos sort by capture date', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
-  const person = auth.createMember('Capture dates', 'capture-dates');
+  const person = (await auth.createMember('Capture dates'));
   const session = auth.exchangeInvite(person.token)!;
   await page.context().addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
-  await writeFile(path.join(directory, 'photos', 'capture-dates', 'old-capture-new-upload.jpg'), await sharp({ create: { width: 42, height: 36, channels: 3, background: '#792863' } }).jpeg().toBuffer());
+  await writeFile(path.join(directory, 'photos', 'Capture dates', 'old-capture-new-upload.jpg'), await sharp({ create: { width: 42, height: 36, channels: 3, background: '#792863' } }).jpeg().toBuffer());
   await indexFiles(); await page.request.get(`${origin}${basePath}/api/photos?refresh=1`);
   await page.goto(`${origin}${basePath}/`);
   await page.getByLabel('Search photos', { exact: true }).click();
@@ -1174,7 +1175,7 @@ test('search shortcuts toggle closed and newly added old photos sort by capture 
   expect(first.name).toBe('old-capture-new-upload.jpg');
   expect(first.takenAt).toBe('2020-01-01T04:00:00.000');
   expect(first.modifiedAt.slice(0, 10)).not.toBe('2020-01-01');
-  await page.locator('#folder-filter').selectOption('capture-dates');
+  await page.locator('#folder-filter').selectOption('Capture dates');
   await expect(page.locator('.photo-tile')).toHaveCount(1);
   await expect(page.locator('.timeline-date')).toContainText('2020');
 });
@@ -1189,7 +1190,7 @@ test('one admin creates and switches collections while guest access, files, and 
   expect(login.status()).toBe(200);
   const initial = await (await page.request.get(`${adminEndpoint}/config`)).json();
   const saved = await page.request.post(`${adminEndpoint}/config`, { headers: { origin }, data: { action: 'save', confirmFolderChange: true, settings: {
-    ...initial.settings, collectionName: 'First collection', photoRoot: path.join(directory, 'photos', 'host'), immichPhotoRoot: '/external/gather/host', immichApiKey: '', immichScanApiKey: ''
+    ...initial.settings, collectionName: 'First collection', photoRoot: path.join(directory, 'photos', 'Host'), immichPhotoRoot: '/external/gather/Host', immichApiKey: '', immichScanApiKey: ''
   } } });
   expect(saved.status()).toBe(200);
   const firstInvite = await (await page.request.post(`${adminEndpoint}/config`, { headers: { origin }, data: { action: 'create-member', name: 'First guest', folder: 'Owner' } })).json();
@@ -1208,7 +1209,7 @@ test('one admin creates and switches collections while guest access, files, and 
     await page.getByRole('button', { name: '+ New collection', exact: true }).click();
     await page.getByLabel('New collection name', { exact: true }).fill('Second collection');
     await page.getByRole('button', { name: 'Browse folders', exact: true }).click();
-    await page.getByRole('button', { name: '▱ bob →', exact: true }).click();
+    await page.getByRole('button', { name: '▱ Bob →', exact: true }).click();
     await page.getByRole('button', { name: 'Use this folder', exact: true }).click();
     await page.getByRole('button', { name: 'Create collection', exact: true }).click();
     await page.waitForURL(new RegExp(`${basePath}/c/[a-z0-9-]+/admin$`));
@@ -1217,8 +1218,8 @@ test('one admin creates and switches collections while guest access, files, and 
     await expect(page.getByLabel('Manage collection')).toHaveValue(collectionBase.split('/').at(-1)!);
     const overview = await (await page.request.get(`${secondApi}/admin/config`)).json();
     expect(overview.collections).toHaveLength(2);
-    expect(overview.settings.photoRoot).toBe(path.join(directory, 'photos', 'bob'));
-    expect(overview.settings.immichPhotoRoot).toBe('/external/gather/bob');
+    expect(overview.settings.photoRoot).toBe(path.join(directory, 'photos', 'Bob'));
+    expect(overview.settings.immichPhotoRoot).toBe('/external/gather/Bob');
     expect(overview.previewKeyConfigured).toBe(true);
     expect(overview.settings.immichApiKey).toBeUndefined();
     expect(overview.members).toEqual([]);
@@ -1227,7 +1228,7 @@ test('one admin creates and switches collections while guest access, files, and 
     expect((await firstPage.request.post(`${secondApi}/session`, { headers: { origin }, data: { token: oldToken } })).status()).toBe(401);
     await page.getByRole('button', { name: 'People & invitations', exact: true }).click();
     await page.getByLabel('Display name', { exact: true }).fill('Second guest');
-    await page.getByLabel('Upload folder', { exact: true }).fill('Owner');
+    await expect(page.getByLabel('Upload folder', { exact: true })).toHaveValue('Second guest');
     await page.getByRole('button', { name: 'Create personal invitation', exact: true }).click();
     const secondInvite = await page.getByRole('textbox', { name: 'Generated invitation link' }).inputValue();
     expect(new URL(secondInvite).pathname).toBe(`${collectionBase}/`);
@@ -1248,7 +1249,7 @@ test('one admin creates and switches collections while guest access, files, and 
     const image = await sharp({ create: { width: 19, height: 21, channels: 3, background: '#a12390' } }).png().toBuffer();
     await secondPage.locator('input[type="file"]').setInputFiles({ name: 'only-second.png', mimeType: 'image/png', buffer: image });
     await expect(secondPage.locator('.upload-panel')).toContainText('Saved · Immich preview processing');
-    expect(await readFile(path.join(directory, 'photos', 'bob', 'Owner', 'only-second.png'))).toEqual(image);
+    expect(await readFile(path.join(directory, 'photos', 'Bob', 'Second guest', 'only-second.png'))).toEqual(image);
     expect((await (await firstPage.request.get(`${origin}${basePath}/api/photos`)).json()).total).toBe(2);
     const firstMembers = await (await page.request.get(`${adminEndpoint}/config`)).json();
     expect(firstMembers.members.map((member: any) => member.name)).toEqual(['First guest']);
@@ -1293,6 +1294,11 @@ test('read-only shared collections allow browsing and downloads while rejecting 
   expect((await page.request.get(`${collection}/api/media/${photos[0].id}?kind=original`)).ok()).toBe(true);
   expect((await page.request.delete(`${collection}/api/photos`, { headers: { origin }, data: { photos: [] } })).status()).toBe(403);
   expect(await readdir(root)).toEqual(before);
+  await page.getByRole('button', { name: 'Change name for Demo visitor', exact: true }).click();
+  await expect(page.locator('.profile-dialog input')).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Save name', exact: true })).toBeDisabled();
+  const rename = await page.request.patch(`${collection}/api/profile`, { headers: { origin }, data: { name: 'Different visitor' } });
+  expect(rename.status()).toBe(403);
 });
 
 
@@ -1302,13 +1308,13 @@ test('contributors confirm individual and bulk deletion while other contributors
   const root = path.join(directory, 'photos', 'delete-gallery');
   await mkdir(root, { recursive: true });
   const id = settings.createCollection({ ...settings.readSettings(), photoRoot: root, readOnly: false, collectionName: 'Delete test', immichUrl: immichOrigin, immichApiKey: 'test-preview-key', immichScanApiKey: 'test-scan-key', immichLibraryId: libraryId, immichPhotoRoot: '/external/gather/delete-gallery' });
-  const invitation = settings.withSettings(() => {
-    const own = auth.createMember('Deletion owner', 'owner');
-    auth.createMember('Another contributor', 'other');
+  const invitation = (await settings.withSettings(async () => {
+    const own = (await auth.createMember('Deletion owner'));
+    (await auth.createMember('Another contributor'));
     return own;
-  }, id);
+  }, id));
   for (const [index, name] of ['my-first.png', 'my-second.png', 'my-third.png', 'their.png'].entries()) {
-    const folder = index === 3 ? 'other' : 'owner', relative = `${folder}/${name}`;
+    const folder = index === 3 ? 'Another contributor' : 'Deletion owner', relative = `${folder}/${name}`;
     await writeFile(path.join(root, relative), importImage);
     const asset = `11111111-2222-4111-8111-${String(index + 1).padStart(12, '0')}`;
     indexed.set(`/external/gather/delete-gallery/${relative}`, asset); images.set(asset, importImage); dimensions.set(asset, { width: 52, height: 41 });
@@ -1333,13 +1339,13 @@ test('contributors confirm individual and bulk deletion while other contributors
   const inventory = (await (await page.request.get(`${collection}/api/photos`)).json()).photos;
   const forged = await page.request.delete(`${collection}/api/photos`, { headers: { origin }, data: { photos: inventory.filter((photo: any) => ['my-first.png', 'their.png'].includes(photo.name)).map(({ id, revision }: any) => ({ id, revision })) } });
   expect(forged.status()).toBe(403);
-  expect(await readFile(path.join(root, 'owner/my-first.png'))).toEqual(importImage);
+  expect(await readFile(path.join(root, 'Deletion owner/my-first.png'))).toEqual(importImage);
   await other.uncheck();
   await page.getByRole('button', { name: 'Delete selected photos' }).click();
   const confirmation = page.getByRole('dialog', { name: 'Delete photo?', exact: true });
   await expect(confirmation).toBeVisible();
   await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
-  expect(await readFile(path.join(root, 'owner/my-first.png'))).toEqual(importImage);
+  expect(await readFile(path.join(root, 'Deletion owner/my-first.png'))).toEqual(importImage);
   await first.uncheck();
   await page.getByRole('button', { name: 'Open their.png, shared by Another contributor', exact: true }).click();
   await expect(page.locator('.pswp')).toBeVisible();
@@ -1354,7 +1360,7 @@ test('contributors confirm individual and bulk deletion while other contributors
   await confirmation.getByRole('button', { name: 'Delete photo', exact: true }).click();
   await expect(confirmation).not.toBeVisible(); await expect(page.locator('.pswp')).not.toBeVisible();
   await expect(page.locator('.photo-tile')).toHaveCount(3);
-  expect(await readdir(path.join(root, 'owner'))).not.toContain('my-first.png');
+  expect(await readdir(path.join(root, 'Deletion owner'))).not.toContain('my-first.png');
   await expect.poll(() => page.evaluate(() => !(history.state?.['sveltekit:states']?.modalIds?.length)), { timeout: 3000 }).toBe(true);
   await page.getByRole('button', { name: 'Open my-third.png, shared by Deletion owner', exact: true }).click();
   await expect(page.locator('.pending-dialog')).toBeVisible();
@@ -1367,8 +1373,8 @@ test('contributors confirm individual and bulk deletion while other contributors
   const bulk = page.getByRole('dialog', { name: 'Delete 2 photos?', exact: true });
   await bulk.getByRole('button', { name: 'Delete photos', exact: true }).click();
   await expect(bulk).not.toBeVisible(); await expect(page.locator('.photo-tile')).toHaveCount(1);
-  expect(await readdir(path.join(root, 'owner'))).toEqual([]);
-  expect(await readFile(path.join(root, 'other/their.png'))).toEqual(importImage);
+  expect(await readdir(path.join(root, 'Deletion owner'))).toEqual([]);
+  expect(await readFile(path.join(root, 'Another contributor/their.png'))).toEqual(importImage);
   await expect.poll(() => page.evaluate(() => !(history.state?.['sveltekit:states']?.modalIds?.length))).toBe(true);
   await page.goBack(); await expect(page).toHaveURL(previous);
   expect(errors).toEqual([]);

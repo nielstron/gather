@@ -88,7 +88,7 @@ export function createImporter(dependencies: {
       const pending = items.filter(item => ['pending', 'running'].includes(item.status));
       await mapConcurrent(pending, 2, async item => {
         if (controller.signal.aborted) return;
-        const authorized = withSettings(() => !readSettings().readOnly && config.photoRoot === job.root && listMembers().some(user => user.id === member.id && user.folder === member.folder), collection);
+        const authorized = withSettings(() => !readSettings().readOnly && config.photoRoot === job.root && listMembers().some(user => user.id === member.id), collection);
         if (!authorized) { job.error = 'Import stopped because collection access or its shared folder changed.'; controller.abort(); return; }
         item.status = 'running'; delete item.error; writeItem(job, item);
         for (let attempt = 0; attempt < 4; attempt++) {
