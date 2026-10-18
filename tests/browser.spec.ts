@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, devices } from '@playwright/test';
 import { createServer, type Server } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, mkdir, lstat, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
@@ -757,6 +757,47 @@ test('search defaults to semantic relevance, combines people and conditions, and
   await expect(page.getByRole('heading', { name: 'No matching photos' })).toBeVisible();
 });
 
+
+test('a single iPhone tap on the circle selects and deselects ready and pending photos', async ({ browser }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invitation = auth.createMember('Touch selection', 'touch-selection');
+  const session = auth.exchangeInvite(invitation.token)!;
+  const context = await browser.newContext({ ...devices['iPhone 13'] });
+  try {
+    await context.addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
+    const page = await context.newPage();
+    await page.route('**/api/photos?*', async route => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.photos.find((photo: any) => photo.name === 'weekend-1.jpg').previewStatus = 'pending';
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto(`${origin}${basePath}/`);
+    async function tapCircle(name: string) {
+      const checkbox = page.getByRole('checkbox', { name: `Select ${name}`, exact: true });
+      const circle = checkbox.locator('..').locator('span');
+      await expect(circle).toBeVisible();
+      await circle.scrollIntoViewIfNeeded();
+      const box = (await circle.boundingBox())!;
+      // One real touch event, with no locator retries that could hide a second-tap bug.
+      await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+      return checkbox;
+    }
+    const first = await tapCircle('weekend-0.jpg');
+    await expect(first).toBeChecked();
+    await expect(page.locator('.selection-bar')).toContainText('1 selected');
+    await expect(page.locator('.pswp')).toHaveCount(0);
+    await tapCircle('weekend-0.jpg');
+    await expect(first).not.toBeChecked();
+    await expect(page.locator('.selection-bar')).toHaveCount(0);
+    const pending = await tapCircle('weekend-1.jpg');
+    await expect(pending).toBeChecked();
+    await expect(page.locator('.pending-dialog')).not.toBeVisible();
+    await expect(page.getByRole('button', { name: 'Download originals', exact: true })).toBeVisible();
+    await tapCircle('weekend-0.jpg');
+    await expect(page.locator('.selection-bar')).toContainText('2 selected');
+  } finally { await context.close(); }
+});
 
 test('Back closes previews and every modal, and ordinary closes preserve page navigation', async ({ page }) => {
   const auth = await import('../src/lib/server/auth');
