@@ -521,26 +521,13 @@
 
 {#if !data.user}
   <main class="welcome">
-    <a href={`${base}/`} class="brand welcome-brand" aria-label="Gather home"><span class="brand-mark"><Icon name="grid" size={21} /></span>gather<span class="brand-period">.</span></a>
     <div class="welcome-content">
-      <div class="welcome-art" aria-hidden="true">
-        <div class="art-orbit orbit-one"></div><div class="art-orbit orbit-two"></div>
-        <div class="art-photo photo-back"><div class="art-sun"></div><div class="art-hill hill-back"></div><div class="art-hill"></div></div>
-        <div class="art-photo photo-front"><div class="art-sun"></div><div class="art-hill hill-back"></div><div class="art-hill"></div></div>
-        <div class="art-folder"><Icon name="folder" size={38} /><span>Good times, together.</span></div>
-        <span class="art-spark"><Icon name="spark" size={27} /></span>
-      </div>
-      <div class="welcome-eyebrow"><span class="status-dot"></span> YOUR PEOPLE. YOUR PHOTOS.</div>
-      <h1>Every perspective.<br /><span>One shared place.</span></h1>
-      <p class="welcome-description">The moments you captured, and the ones you missed.<br class="desktop-break" /> Bring everyone’s photos together in {data.collectionName}.</p>
       {#if shareToken}
       <form class="invite-form" on:submit|preventDefault={joinCollection}>
         <label for="join-name">Your name</label>
         <div class="invite-input"><Icon name="people" size={18} /><input id="join-name" type="text" bind:value={joinName} autocomplete="given-name" placeholder="What should we call you?" maxlength="80" required disabled={signingIn} /></div>
         {#if authError}<p class="form-error" role="alert">{authError}</p>{/if}
         <Button type="submit" class="primary-button enter-button" loading={signingIn} disabled={!joinName.trim() || signingIn}>Join collection <Icon name="arrow" size={18} /></Button>
-        <p class="invite-hint">We’ll make a folder for you. You can change your name anytime.</p>
-        <p class="identity-hint">This browser remembers you. People with the same name get separate upload folders.</p>
       </form>
       {:else}
       <form class="invite-form" on:submit|preventDefault={acceptSharedLink}>
@@ -548,11 +535,9 @@
         <div class="invite-input"><Icon name="lock" size={18} /><input id="shared-link" type="url" bind:value={sharedLink} autocomplete="off" placeholder="Paste the shared link from your host" required disabled={signingIn} /></div>
         {#if authError}<p class="form-error" role="alert">{authError}</p>{/if}
         <Button type="submit" class="primary-button enter-button" loading={signingIn} disabled={!sharedLink.trim() || signingIn}>Continue <Icon name="arrow" size={18} /></Button>
-        <p class="invite-hint">One link for everyone. Ask your host to share it with you.</p>
       </form>
       {/if}
     </div>
-    <footer class="welcome-footer"><Icon name="folder" size={15} /> Your originals, on your own server. <a href={`${base}/admin`}>Manage collection</a></footer>
   </main>
 {:else}
   <div class="app-shell">
