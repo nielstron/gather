@@ -687,7 +687,10 @@
         <button class="identity-button mobile-identity" on:click={openProfile} aria-label={`Change name for ${data.user.name}`} aria-haspopup="dialog" title={`Change name: ${data.user.name}`}><span class="identity-icon"><Icon name="user" size={22} /></span><span class="identity-name">{data.user.name}</span></button>
         <div class="breadcrumb"><Icon name="folder" size={16} /><span>{data.collectionName}</span><Icon name="chevron" size={13} /><strong>{pageTitle}</strong></div>
         <label class="search-input"><Icon name="search" size={18} /><input type="search" aria-label="Search photos" bind:this={searchInput} on:focus={() => searchActive = true} on:click={() => searchActive = true} aria-controls="search-controls" placeholder="Describe a scene, place, or moment…" bind:value={query} on:input={search} /><span class="search-hint">{searchOptions.mode === 'semantic' ? 'by meaning' : searchOptions.mode === 'filename' ? 'by filename' : 'descriptions'}</span></label>
-        <ImportPhotos {base} name={data.user.name} collectionName={data.collectionName} bind:this={uploadOptions} on:choose={() => input.click()} on:changed={() => void loadPhotos()} />
+        <div class="transfer-actions">
+          <button class="icon-button" on:click={() => downloadOptions.open()} aria-label="Download photos" aria-haspopup="dialog" title="Download photos"><Icon name="download" size={20} /></button>
+          <ImportPhotos {base} name={data.user.name} collectionName={data.collectionName} bind:this={uploadOptions} on:choose={() => input.click()} on:changed={() => void loadPhotos()} />
+        </div>
       </header>
       <div id="search-controls" class="search-controls" class:visible={searchActive} bind:this={searchControls}>
         <SearchFilters {query} visible={searchActive} bind:this={searchFilters} bind:value={searchOptions} on:apply={(event) => { searchOptions = event.detail; selected = new Set(); photos = []; sort = 'relevance'; sortDirection = searchOptions.orderBy?.direction || 'desc'; void loadPhotos(); }} />
@@ -705,7 +708,6 @@
               <select id="folder-filter" value={folder} aria-describedby="photo-count" on:change={(event) => navigate(event.currentTarget.value)}><option value="">All photos</option>{#each data.members as member}<option value={member.folder}>{member.name}{member.id === data.user.id ? ' (you)' : ''}</option>{/each}</select>
             </div>
             <div class="collection-actions">
-              <button class="icon-button" on:click={() => downloadOptions.open()} aria-label="Download photos" title="Download photos"><Icon name="download" size={20} /></button>
               {#if photos.length}<button class="icon-button select-all" class:active={allSelected} on:click={() => { selected = allSelected ? new Set() : new Set(photos.slice(0, 200).map((photo) => photo.id)); }} aria-label={selectionAction} title={selectionAction} aria-pressed={allSelected}><Icon name="select-all" size={20} /></button>{/if}
               <SortPicker field={sortChoice.split(':')[0]} direction={sortDirection} label={sortLabel} relevanceLabel={searchOptions.orderBy ? 'Search order' : semanticQuery ? 'Relevance' : ''} on:change={(event) => { sort = event.detail.field; sortDirection = event.detail.direction; changeSort(); }} />
               <button class="icon-button" on:click={() => loadPhotos()} disabled={loading} aria-label="Refresh photos" title="Refresh photos">{#if loading}<span class="small-spinner" aria-hidden="true"></span>{:else}<Icon name="refresh" size={18} />{/if}</button>

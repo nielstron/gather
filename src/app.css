@@ -115,3 +115,5 @@
 .upload-reminder{display:flex;align-items:flex-start;gap:8px;margin:0;padding:10px 18px;background:#f2effb;color:#645579;font-size:12px;line-height:1.5;border-bottom:1px solid var(--border)}.upload-reminder svg{flex-shrink:0;margin-top:1px}
 
 .upload-panel>.upload-actions{display:flex;justify-content:space-between;gap:12px;padding:8px 14px;border-top:1px solid var(--border)}.upload-actions>.text-button{display:flex;align-items:center;justify-content:center;gap:6px;min-height:44px;font-size:12px;color:#655279}.upload-actions>.text-button:disabled{opacity:.4;cursor:default}.upload-storage-warning{margin:0;padding:0 18px 12px;font-size:12px;line-height:1.5;color:#8d5b58}
+
+.transfer-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}.transfer-actions>.icon-button{min-width:44px;min-height:44px}
