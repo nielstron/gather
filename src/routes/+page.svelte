@@ -1,5 +1,7 @@
 <script lang="ts">
   import { base } from '$app/paths';
+  import { mdiDownload } from '@mdi/js';
+  import { sortPhotos } from '$lib/sort';
   import { mapConcurrent } from '$lib/async';
   import { onMount } from 'svelte';
   import { Button, Badge } from '@immich/ui';
@@ -19,6 +21,7 @@
   let folder = '';
   let query = '';
   let sort = 'newest';
+  let sortDirection = 'desc';
   let selected = new Set<string>();
   let imageErrors = new Set<string>();
   let galleryWidth = 900;
@@ -52,7 +55,7 @@
   $: collectionLabel = !folder ? 'All photos' : `${currentOwner?.name || folder}${currentOwner?.id === data.user?.id ? ' (you)' : ''}`;
   $: allSelected = photos.length > 0 && photos.slice(0, 200).every((photo) => selected.has(photo.id));
   $: selectionAction = allSelected ? 'Deselect all' : photos.length > 200 ? 'Select first 200' : 'Select all';
-  $: sortedPhotos = [...photos].sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name) : Date.parse(b.modifiedAt) - Date.parse(a.modifiedAt));
+  $: sortedPhotos = sortPhotos(photos, sort, sortDirection);
   $: photoIndexes = new Map(sortedPhotos.map((photo, index) => [photo.id, index]));
   $: timelineGroups = groupTimeline(sortedPhotos, galleryWidth, sort);
   $: completedUploads = uploads.filter((upload) => upload.status === 'done').length;
@@ -100,6 +103,8 @@
     const request = ++fetchNumber;
     const requestedFolder = folder;
     const requestedQuery = query.trim();
+    const requestedSort = sort;
+    const requestedDirection = sortDirection;
     const existingPhotos = photos;
     const targetCount = append ? 150 : Math.max(150, existingPhotos.length);
     const baseOffset = append ? existingPhotos.length : 0;
@@ -110,7 +115,7 @@
     try {
       const offsets = Array.from({ length: Math.ceil(targetCount / 300) }, (_, index) => index * 300);
       const pages = await mapConcurrent(offsets, 4, async offset => {
-        const params = new URLSearchParams({ q: requestedQuery, offset: String(baseOffset + offset), limit: String(Math.min(300, targetCount - offset)) });
+        const params = new URLSearchParams({ q: requestedQuery, offset: String(baseOffset + offset), limit: String(Math.min(300, targetCount - offset)), sort: requestedSort === 'name' ? 'name' : 'date', direction: requestedDirection });
         if (requestedFolder) params.set('folder', requestedFolder);
         const response = await fetch(`${base}/api/photos?${params}`, { signal: controller.signal });
         const body = await response.json();
@@ -136,6 +141,12 @@
       clearTimeout(timeout);
       if (request === fetchNumber) loading = false;
     }
+  }
+
+  function changeSort() {
+    selected = new Set();
+    photos = [];
+    void loadPhotos();
   }
 
   function navigate(next: string) {
@@ -257,7 +268,7 @@
     activeViewer.on('uiRegister', () => {
       activeViewer.ui?.registerElement({
         name: 'download-original', order: 11, isButton: true, tagName: 'a', title: 'Download original',
-        html: { isCustomSVG: true, inner: '<path d="M15 6h2v12.17l4.59-4.58L23 15l-7 7-7-7 1.41-1.41L15 18.17V6ZM7 23h18v3H7z"/>' },
+        html: { isCustomSVG: true, size: 24, inner: `<path d="${mdiDownload}"/>` },
         onInit: (element) => {
           const update = () => { const current = viewable[activeViewer.currIndex]; if (current) { (element as HTMLAnchorElement).href = mediaUrl(current, 'original'); element.setAttribute('download', current.name); element.setAttribute('aria-label', `Download ${current.name}`); } };
           activeViewer.on('change', update); update();
@@ -424,7 +435,8 @@
             </div>
             <div class="collection-actions">
               {#if photos.length}<button class="icon-button select-all" class:active={allSelected} on:click={() => { selected = allSelected ? new Set() : new Set(photos.slice(0, 200).map((photo) => photo.id)); }} aria-label={selectionAction} title={selectionAction} aria-pressed={allSelected}><Icon name="select-all" size={20} /></button>{/if}
-              <label class="icon-button sort-control" title={`Sort by: ${sort === 'name' ? 'Filename A–Z' : 'Recently added'}`}><span class="sr-only">Sort photos</span><Icon name="sort" size={20} /><select bind:value={sort}><option value="newest">Recently added</option><option value="name">Filename A–Z</option></select></label>
+              <label class="icon-button sort-control" title={`Sort by: ${sort === 'name' ? 'Filename' : 'Date added'}`}><span class="sr-only">Sort photos</span><Icon name="sort" size={20} /><select value={sort} on:change={(event) => { sort = event.currentTarget.value; sortDirection = sort === 'name' ? 'asc' : 'desc'; changeSort(); }}><option value="newest">Date added</option><option value="name">Filename</option></select></label>
+              <button class="icon-button" on:click={() => { sortDirection = sortDirection === 'asc' ? 'desc' : 'asc'; changeSort(); }} aria-label={sortDirection === 'asc' ? 'Sort descending' : 'Sort ascending'} title={sortDirection === 'asc' ? 'Ascending — switch to descending' : 'Descending — switch to ascending'}><Icon name={sortDirection === 'asc' ? 'sort-ascending' : 'sort-descending'} size={20} /></button>
               <button class="icon-button" on:click={() => loadPhotos()} disabled={loading} aria-label="Refresh photos" title="Refresh photos">{#if loading}<span class="small-spinner" aria-hidden="true"></span>{:else}<Icon name="refresh" size={18} />{/if}</button>
             </div>
           </div>
@@ -441,7 +453,7 @@
             {@const box = group.layout.boxes[index]}
             {#if box}<article class:selected={selected.has(photo.id)} class:pending={photo.previewStatus !== 'ready' || imageErrors.has(photo.id)} class="photo-tile" style:left={`${box.left}px`} style:top={`${box.top}px`} style:width={`${box.width}px`} style:height={`${box.height}px`}>
               <button class="photo-open" on:click={() => openPhoto(photo)} aria-label={`Open ${photo.name}, shared by ${photo.owner}`} title={`${photo.name} · ${photo.owner}`}>
-                {#if photo.previewStatus === 'ready' && !imageErrors.has(photo.id)}<img src={mediaUrl(photo, 'thumbnail')} alt={photo.name} loading={(photoIndexes.get(photo.id) || 0) < 12 ? 'eager' : 'lazy'} decoding="async" fetchpriority={(photoIndexes.get(photo.id) || 0) < 4 ? 'high' : 'auto'} on:error={() => { imageErrors = new Set([...imageErrors, photo.id]); }} />{:else}<div class="pending-preview"><Icon name={photo.previewStatus === 'pending' ? 'clock' : 'image'} size={24} stroke={1.5} /><span>{photo.previewStatus === 'pending' ? 'Processing' : 'No preview'}</span></div>{/if}
+                {#if photo.previewStatus === 'ready' && !imageErrors.has(photo.id)}<img src={mediaUrl(photo, 'thumbnail')} alt={photo.name} loading={(photoIndexes.get(photo.id) || 0) < 12 ? 'eager' : 'lazy'} decoding="async" fetchpriority={(photoIndexes.get(photo.id) || 0) < 4 ? 'high' : 'auto'} on:error={() => { imageErrors = new Set([...imageErrors, photo.id]); }} />{:else}<div class="pending-preview"><Icon name={photo.previewStatus === 'pending' ? 'clock' : 'image'} size={24} /><span>{photo.previewStatus === 'pending' ? 'Processing' : 'No preview'}</span></div>{/if}
                 <span class="photo-gradient"></span><span class="photo-owner">{photo.owner}</span>
               </button>
               <label class="photo-checkbox" class:checked={selected.has(photo.id)}><input type="checkbox" checked={selected.has(photo.id)} on:change={() => toggleSelect(photo.id)} aria-label={`Select ${photo.name}`} /><span><Icon name="check" size={15} /></span></label>
@@ -451,7 +463,7 @@
             </div>
           </section>
           {/each}
-          {#if !photos.length && !loading}<div class="empty-state"><div class="empty-illustration"><span class="empty-photo"><Icon name="image" size={39} stroke={1.3} /></span><span class="empty-plus">+</span></div><Badge size="small" color="secondary">{query ? 'Nothing here yet' : 'Room for every moment'}</Badge><h2>{query ? 'No matching photos' : folder && folder !== data.user.folder ? 'Their story starts here' : 'The best memories are shared'}</h2><p>{query ? 'Try another filename, or explore a different folder.' : folder && folder !== data.user.folder ? `${currentOwner?.name || 'This person'} hasn’t shared any photos yet. Check back soon.` : 'Add your first photos and give everyone a new perspective. Your originals stay right here, on your server.'}</p>{#if query}<Button class="primary-button" onclick={() => { query = ''; void loadPhotos(); }}>Clear search</Button>{:else}<Button class="primary-button" onclick={() => input.click()}><Icon name="upload" size={18} />Upload your photos</Button><span class="empty-drop-hint">or drop them anywhere on this page</span>{/if}</div>{:else if !photos.length && loading}<div class="loading-state"><span class="large-spinner"></span><p>Gathering your photos…</p></div>{/if}
+          {#if !photos.length && !loading}<div class="empty-state"><div class="empty-illustration"><span class="empty-photo"><Icon name="image" size={39} /></span><span class="empty-plus">+</span></div><Badge size="small" color="secondary">{query ? 'Nothing here yet' : 'Room for every moment'}</Badge><h2>{query ? 'No matching photos' : folder && folder !== data.user.folder ? 'Their story starts here' : 'The best memories are shared'}</h2><p>{query ? 'Try another filename, or explore a different folder.' : folder && folder !== data.user.folder ? `${currentOwner?.name || 'This person'} hasn’t shared any photos yet. Check back soon.` : 'Add your first photos and give everyone a new perspective. Your originals stay right here, on your server.'}</p>{#if query}<Button class="primary-button" onclick={() => { query = ''; void loadPhotos(); }}>Clear search</Button>{:else}<Button class="primary-button" onclick={() => input.click()}><Icon name="upload" size={18} />Upload your photos</Button><span class="empty-drop-hint">or drop them anywhere on this page</span>{/if}</div>{:else if !photos.length && loading}<div class="loading-state"><span class="large-spinner"></span><p>Gathering your photos…</p></div>{/if}
         </div>
         {#if hasMore}<div class="load-more"><Button variant="outline" onclick={() => loadPhotos(true)} loading={loading}>Load more photos</Button><span>Showing {photos.length} of {total}</span></div>{/if}
       </section>
@@ -473,5 +485,5 @@
   </dialog>
   {#if dragging}<div class="drop-overlay"><div><span class="drop-icon"><Icon name="upload" size={42} /></span><h2>Drop your moments here</h2><p>Uploading to <strong>{data.user.name}’s folder</strong></p><span>Everyone in the collection can view and download them.</span></div></div>{/if}
   {#if uploads.length}<section class="upload-panel" aria-label="Upload progress" aria-live="polite"><header><span class="upload-panel-icon"><Icon name={activeUploads ? 'upload' : 'check'} size={19} /></span><div><strong>{activeUploads ? `Uploading ${uploads.length - completedUploads} ${uploads.length - completedUploads === 1 ? 'photo' : 'photos'}` : `${completedUploads} of ${uploads.length} uploaded`}</strong><span><Icon name="folder" size={12} /> {data.user.name} / {data.user.folder}</span></div><button class="icon-button" on:click={() => { uploadPanelOpen = !uploadPanelOpen; }} aria-label={uploadPanelOpen ? 'Minimize uploads' : 'Expand uploads'}><span>{uploadPanelOpen ? '−' : '+'}</span></button>{#if !activeUploads}<button class="icon-button" on:click={() => { uploads = []; }} aria-label="Close uploads"><Icon name="close" size={17} /></button>{/if}</header>{#if uploadPanelOpen}<div class="upload-list">{#each uploads as item (item.id)}<div class="upload-row"><span class="upload-file-icon"><Icon name="image" size={21} /></span><div class="upload-item-body"><strong>{item.file.name}</strong><span class:error-text={item.status === 'error'}>{item.status === 'done' ? 'Saved · Immich preview processing' : item.status === 'uploading' ? `${item.progress}% · ${bytes(item.file.size)}` : item.status === 'error' ? item.error : item.status === 'cancelled' ? 'Cancelled' : 'Waiting to upload'}</span>{#if item.status === 'uploading'}<div class="upload-progress"><div style:width={`${item.progress}%`}></div></div>{/if}</div>{#if item.status === 'done'}<span class="upload-success"><Icon name="check" size={18} /></span>{:else if item.status === 'error' || item.status === 'cancelled'}<button class="icon-button" on:click={() => retryUpload(item)} disabled={item.file.size > data.maxUploadBytes} aria-label={`Retry ${item.file.name}`}><Icon name="refresh" size={16} /></button>{:else}<button class="icon-button" on:click={() => cancelUpload(item)} aria-label={`Cancel ${item.file.name}`}><Icon name="close" size={16} /></button>{/if}</div>{/each}</div><footer>Shared with everyone in this collection.</footer>{/if}</section>{/if}
-  <dialog class="pending-dialog" bind:this={pendingDialog}><button class="icon-button dialog-close" on:click={() => pendingDialog.close()} aria-label="Close photo details"><Icon name="close" /></button>{#if pendingPhoto}<div class="dialog-image"><Icon name="image" size={52} stroke={1.2} /></div><Badge size="small" color="secondary">Original safely stored</Badge><h2>{pendingPhoto.name}</h2><p>{pendingPhoto.previewStatus === 'pending' ? 'Immich is preparing this photo’s preview. The original is already yours to enjoy.' : 'The Immich preview is currently unavailable. You can still download the original photo.'}</p><div class="dialog-metadata"><span>Shared by {pendingPhoto.owner}</span><span>{bytes(pendingPhoto.bytes)}</span></div><a class="primary-button button-link" href={mediaUrl(pendingPhoto, 'original')} download={pendingPhoto.name}><Icon name="download" size={18} />Download original</a>{/if}</dialog>
+  <dialog class="pending-dialog" bind:this={pendingDialog}><button class="icon-button dialog-close" on:click={() => pendingDialog.close()} aria-label="Close photo details"><Icon name="close" /></button>{#if pendingPhoto}<div class="dialog-image"><Icon name="image" size={52} /></div><Badge size="small" color="secondary">Original safely stored</Badge><h2>{pendingPhoto.name}</h2><p>{pendingPhoto.previewStatus === 'pending' ? 'Immich is preparing this photo’s preview. The original is already yours to enjoy.' : 'The Immich preview is currently unavailable. You can still download the original photo.'}</p><div class="dialog-metadata"><span>Shared by {pendingPhoto.owner}</span><span>{bytes(pendingPhoto.bytes)}</span></div><a class="primary-button button-link" href={mediaUrl(pendingPhoto, 'original')} download={pendingPhoto.name}><Icon name="download" size={18} />Download original</a>{/if}</dialog>
 {/if}

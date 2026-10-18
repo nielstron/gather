@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@immich/ui": "0.91.0",
+    "@mdi/js": "^7.4.47",
     "archiver": "^7.0.1",
     "better-sqlite3": "^12.4.1",
     "justified-layout": "4.1.0",

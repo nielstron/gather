@@ -1,3 +1,4 @@
+import { sortPhotos } from '$lib/sort';
 import { json } from '@sveltejs/kit';
 import { listMembers } from '$lib/server/auth';
 import { scanPhotos, invalidatePhotos } from '$lib/server/media';
@@ -20,7 +21,7 @@ export const GET: RequestHandler = async ({ url }) => {
     const matching = all.filter((photo) => (folder === null || photo.folder.toLowerCase() === folder.toLowerCase()) && (!query || `${photo.name} ${photo.owner}`.toLowerCase().includes(query)));
     const offset = Math.max(0, Number.parseInt(url.searchParams.get('offset') || '0', 10) || 0);
     const limit = Math.min(300, Math.max(1, Number.parseInt(url.searchParams.get('limit') || '150', 10) || 150));
-    const { photos, previewService } = await enrichPhotos(matching.slice(offset, offset + limit));
+    const { photos, previewService } = await enrichPhotos(sortPhotos(matching, url.searchParams.get('sort') || 'date', url.searchParams.get('direction') || 'desc').slice(offset, offset + limit));
     return json({ photos, members, previewService, folders: [...folders.values()], total: matching.length, offset, hasMore: offset + photos.length < matching.length });
   } catch (error) { return apiError(error); }
 };
