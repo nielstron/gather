@@ -36,6 +36,12 @@ The gallery's download button opens contributor checkboxes with yourself deselec
 
 History is per contributor identity and collection. Downloading one person's photos leaves other people's undownloaded files available as updates. Opening or zooming a preview does not count as a download. History updates after the server finishes streaming; Gather cannot confirm that the browser saved the file to disk.
 
+## Delete your photos
+
+Use the trash icon in the viewer or photo details, or select your photos and use the trash icon beside Download. Confirming permanently removes those originals from the shared folder for everyone. Mixed selections containing another contributor's photos cannot be deleted. Read-only collections disable deletion.
+
+Ownership follows the signed-in contributor's folders, including legacy aliases, rather than the uploader or filename. Gather is for trusted groups: a valid shared link can claim an existing contributor name and control that contributor's originals. Names are not passwords.
+
 ## Limits
 
-The current implementation supports up to 100 collections, 20,000 photos per collection, and 12 directory levels. The default per-file upload limit is 50 MB. Explicit photo selections are limited to 200 photos; contributor-based archives can include the whole collection. Photo deletion and editing are not provided.
+The current implementation supports up to 100 collections, 20,000 photos per collection, and 12 directory levels. The default per-file upload limit is 50 MB. Explicit photo selections are limited to 200 photos; contributor-based archives can include the whole collection. Photo editing is not provided.

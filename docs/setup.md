@@ -40,7 +40,7 @@ Use **+ New collection** to choose another folder and optionally inherit the Imm
 
 The original gallery stays at `/`; additional galleries use `/c/<id>/`, or `/gather/c/<id>/` with that prefix. Changing a collection's root requires confirmation and revokes that collection's guest access, preserving its originals. Everything under each selected root is shared, so choose overlapping roots only deliberately.
 
-Enable **Read-only collection** in **Shared folder** for a browse-and-download gallery. Uploads, duplicate checks, imports, and guest-triggered scans are rejected on the server; upload controls are hidden. New visitors can still join through a sharing link, without creating directories in the photo root. An administrator can still configure the collection and request indexing.
+Enable **Read-only collection** in **Shared folder** for a browse-and-download gallery. Uploads, duplicate checks, imports, deletions, and guest-triggered scans are rejected on the server; upload controls are hidden. New visitors can still join through a sharing link, without creating directories in the photo root. An administrator can still configure the collection and request indexing.
 
 ## Connect Immich
 

@@ -69,3 +69,10 @@ export function modalHistory(dialog: HTMLDialogElement) {
   sync();
   return { destroy() { observer.disconnect(); dialog.removeEventListener('close', sync); release?.(); } };
 }
+
+
+/** Finish closing the top dialog before closing its parent viewer or dialog. */
+export async function settleModalHistory() {
+  await Promise.resolve();
+  while (pendingBack) await pendingBack;
+}

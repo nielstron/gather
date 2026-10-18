@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { mdiFilterVariant, mdiViewGrid, mdiImageOutline, mdiUpload, mdiDownload, mdiFolderOutline, mdiMagnify, mdiChevronRight, mdiClose, mdiCheck, mdiSelectAll, mdiSelectOff, mdiAccountMinusOutline, mdiCheckboxIntermediate, mdiRefresh, mdiSort, mdiSortAscending, mdiSortDescending, mdiLogout, mdiLockOutline, mdiAccountOutline, mdiAccountGroupOutline, mdiClockOutline, mdiInformationOutline, mdiArrowRight, mdiAutoFix } from '@mdi/js';
+  import { mdiFilterVariant, mdiViewGrid, mdiImageOutline, mdiUpload, mdiDownload, mdiFolderOutline, mdiMagnify, mdiChevronRight, mdiClose, mdiCheck, mdiSelectAll, mdiTrashCanOutline, mdiSelectOff, mdiAccountMinusOutline, mdiCheckboxIntermediate, mdiRefresh, mdiSort, mdiSortAscending, mdiSortDescending, mdiLogout, mdiLockOutline, mdiAccountOutline, mdiAccountGroupOutline, mdiClockOutline, mdiInformationOutline, mdiArrowRight, mdiAutoFix } from '@mdi/js';
   export let name = 'grid';
   export let size = 20;
   const paths: Record<string, string> = {
@@ -12,6 +12,7 @@
     'search': mdiMagnify,
     'chevron': mdiChevronRight,
     'close': mdiClose,
+    'delete': mdiTrashCanOutline,
     'check': mdiCheck,
     'select-all': mdiSelectAll,
     'select-none': mdiSelectOff,

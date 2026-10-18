@@ -3,7 +3,7 @@
   import { page } from '$app/stores';
   import { collectionBase } from '$lib/collection-path';
   $: base = collectionBase($page.url.pathname, appBase);
-  import { mdiDownload } from '@mdi/js';
+  import { mdiDownload, mdiTrashCanOutline } from '@mdi/js';
   import { saveQueuedUpload, updateQueuedUpload, removeQueuedUpload, restoreQueuedUploads } from '$lib/upload-queue';
   import { transferResumable, TransferError } from '$lib/resumable-upload';
   import { sortPhotos } from '$lib/sort';
@@ -13,7 +13,7 @@
   import { Button, Badge } from '@immich/ui';
   import justifiedLayout from 'justified-layout';
   import PhotoSwipe from 'photoswipe';
-  import { modalHistory, trackModalHistory } from '$lib/modal-history';
+  import { modalHistory, trackModalHistory, settleModalHistory } from '$lib/modal-history';
   import { installProgressiveImages } from '$lib/progressive-viewer';
   import SortPicker from '$lib/components/SortPicker.svelte';
   import SearchFilters from '$lib/components/SearchFilters.svelte';
@@ -353,11 +353,49 @@
     } catch (cause) { error = cause instanceof Error ? cause.message : 'Could not sign out.'; }
   }
 
+  let deleteDialog: HTMLDialogElement;
+  let deleteCandidates: Photo[] = [];
+  let deleting = false, deleteError = '';
+  $: selectedPhotos = photos.filter(photo => selected.has(photo.id));
+  $: canDeleteSelection = !data.readOnly && selectedPhotos.length === selected.size && selectedPhotos.length > 0 && selectedPhotos.every(isOwnPhoto);
+  function isOwnPhoto(photo: Photo) {
+    return !data.readOnly && !!data.user && photo.folder.toLowerCase() === data.user.folder.toLowerCase();
+  }
+  function requestDelete(candidates: Photo[]) {
+    if (deleting || !candidates.length || candidates.some(photo => !isOwnPhoto(photo))) return;
+    deleteCandidates = candidates;
+    deleteError = '';
+    deleteDialog.showModal();
+  }
+  async function confirmDelete() {
+    if (deleting || !deleteCandidates.length) return;
+    deleting = true; deleteError = '';
+    try {
+      const response = await fetch(`${base}/api/photos`, { signal: AbortSignal.timeout(30_000), method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ photos: deleteCandidates.map(({ id, revision }) => ({ id, revision })) }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Your photos could not be deleted. Please retry.');
+      const removed = new Set<string>(result.deleted);
+      photos = photos.filter(photo => !removed.has(photo.id));
+      selected = new Set([...selected].filter(id => !removed.has(id)));
+      deleteCandidates = deleteCandidates.filter(photo => !removed.has(photo.id));
+      if (!deleteCandidates.length) {
+        deleteDialog.close();
+        await settleModalHistory();
+      }
+      if (removed.size && !deleteCandidates.length) {
+        viewer?.close();
+        if (pendingPhoto && removed.has(pendingPhoto.id)) pendingDialog.close();
+      }
+      if (result.failed.length) deleteError = `${result.failed.length} ${result.failed.length === 1 ? 'photo could' : 'photos could'} not be deleted. ${result.failed[0].error}`;
+    } catch (cause) { deleteError = cause instanceof TypeError || cause instanceof DOMException && ['TimeoutError', 'AbortError'].includes(cause.name) ? 'The connection was interrupted. Retry to check and finish deleting your photos.' : cause instanceof Error ? cause.message : 'Your photos could not be deleted. Please retry.'; }
+    finally { deleting = false; void loadPhotos(); }
+  }
+
   function toggleSelect(id: string) {
     const next = new Set(selected);
     if (next.has(id)) next.delete(id);
     else if (next.size < 200) next.add(id);
-    else { error = 'You can download up to 200 photos at a time. Download this selection, then choose the next photos.'; return; }
+    else { error = 'You can select up to 200 photos at a time. Finish this selection, then choose the next photos.'; return; }
     selected = next;
   }
 
@@ -393,6 +431,19 @@
         html: { isCustomSVG: true, size: 24, inner: `<path d="${mdiDownload}"/>` },
         onInit: (element) => {
           const update = () => { const current = viewable[activeViewer.currIndex]; if (current) { (element as HTMLAnchorElement).href = mediaUrl(current, 'original'); element.setAttribute('download', current.name); element.setAttribute('aria-label', `Download ${current.name}`); } };
+          activeViewer.on('change', update); update();
+        },
+      });
+      if (!data.readOnly) activeViewer.ui?.registerElement({
+        name: 'delete-photo', order: 12, isButton: true, title: 'Delete photo',
+        html: { isCustomSVG: true, size: 24, inner: `<path d="${mdiTrashCanOutline}"/>` },
+        onClick: () => { const current = viewable[activeViewer.currIndex]; if (current && isOwnPhoto(current)) requestDelete([current]); },
+        onInit: (element) => {
+          const update = () => {
+            const current = viewable[activeViewer.currIndex];
+            element.style.display = current && isOwnPhoto(current) ? '' : 'none';
+            element.setAttribute('aria-label', current ? `Delete ${current.name}` : 'Delete photo');
+          };
           activeViewer.on('change', update); update();
         },
       });
@@ -728,7 +779,7 @@
         {#if searchTruncated}<p class="search-limit-notice">Showing the best {total} semantic matches. Add filters to narrow the results.</p>{/if}
         {#if previewService !== 'ready'}<div class="service-notice"><Icon name="info" size={19} /><div><strong>{previewService === 'unconfigured' ? 'Connect Immich to bring your gallery to life' : 'Immich previews are temporarily unavailable'}</strong><p>{previewService === 'unconfigured' ? 'Your host needs to connect an Immich external library. You can already upload photos and download originals.' : 'Your photos are safely stored. You can keep uploading and downloading originals while Immich reconnects.'}</p></div><button class="text-button" on:click={() => loadPhotos()}>Refresh</button></div>{/if}
         {#if error}<div class="error-notice" role="alert"><Icon name="info" size={18} /><span>{error}</span><button class="text-button" on:click={() => loadPhotos()}>Try again</button></div>{/if}
-        {#if selected.size}<div class="selection-bar"><button class="icon-button" on:click={() => { selected = new Set(); }} aria-label="Clear selection"><Icon name="close" size={18} /></button><strong>{selected.size} selected</strong><Button class="primary-button" onclick={() => downloadOptions.open([...selected])}><Icon name="download" size={17} />Download</Button></div>{/if}
+        {#if selected.size}<div class="selection-bar"><button class="icon-button" on:click={() => { selected = new Set(); }} aria-label="Clear selection"><Icon name="close" size={18} /></button><strong>{selected.size} selected</strong><div class="selection-actions">{#if !data.readOnly}<button type="button" class="icon-button delete-button" aria-label="Delete selected photos" title={canDeleteSelection ? 'Delete selected photos' : 'Select only your own photos to delete'} disabled={!canDeleteSelection || deleting} on:click={() => requestDelete(selectedPhotos)}><Icon name="delete" size={20} /></button>{/if}<Button class="primary-button" onclick={() => downloadOptions.open([...selected])}><Icon name="download" size={17} />Download</Button></div></div>{/if}
         <div class="photo-timeline" class:selecting={selected.size > 0} bind:clientWidth={galleryWidth}>
           {#each timelineGroups as group (group.key)}
           <section class="timeline-group" aria-label={group.label || 'Photos by filename'}>
@@ -756,6 +807,13 @@
   </div>
   <DownloadPhotos {base} selfFolder={data.user.folder} bind:this={downloadOptions} />
   <input class="sr-only" bind:this={input} type="file" multiple accept="image/*,.heic,.heif,.avif,.tif,.tiff" aria-label="Choose photos to upload" on:change={(event) => { if (event.currentTarget.files) addUploads(event.currentTarget.files); event.currentTarget.value = ''; }} />
+  <dialog use:modalHistory class="delete-dialog" bind:this={deleteDialog} aria-labelledby="delete-heading">
+    <h2 id="delete-heading">Delete {deleteCandidates.length === 1 ? 'photo' : `${deleteCandidates.length} photos`}?</h2>
+    {#if deleteCandidates.length === 1}<p class="delete-filename">{deleteCandidates[0].name}</p>{/if}
+    <p>These originals will be permanently removed from the shared folder for everyone. This cannot be undone.</p>
+    {#if deleteError}<p class="form-error" role="alert">{deleteError}</p>{/if}
+    <footer><button type="button" class="text-button" disabled={deleting} on:click={() => deleteDialog.close()}>Cancel</button><Button class="primary-button delete-confirm" loading={deleting} disabled={deleting || !deleteCandidates.length} onclick={confirmDelete}><Icon name="delete" size={18} />Delete {deleteCandidates.length === 1 ? 'photo' : 'photos'}</Button></footer>
+  </dialog>
   <dialog use:modalHistory class="profile-dialog" bind:this={profileDialog} aria-labelledby="profile-heading">
     <button class="icon-button dialog-close" on:click={() => profileDialog.close()} aria-label="Close name settings" disabled={savingProfile}><Icon name="close" /></button>
     <span class="profile-dialog-icon"><Icon name="user" size={26} /></span>
@@ -771,5 +829,5 @@
   </dialog>
   {#if dragging}<div class="drop-overlay"><div><span class="drop-icon"><Icon name="upload" size={42} /></span><h2>Drop your moments here</h2><p>Uploading to <strong>{data.user.name}’s folder</strong></p><span>Everyone in the collection can view and download them.</span></div></div>{/if}
   {#if uploads.length}<section class="upload-panel" bind:clientHeight={uploadPanelHeight} aria-label="Upload progress" aria-live="polite"><header><span class="upload-panel-icon"><Icon name={activeUploads ? 'upload' : 'check'} size={19} /></span><div><strong>{activeUploads ? `Uploading ${uploads.length - completedUploads} ${uploads.length - completedUploads === 1 ? 'photo' : 'photos'}` : `${completedUploads} of ${uploads.length} finished${uploads.some(item => item.duplicate) ? ` · ${uploads.filter(item => item.duplicate).length} skipped` : ''}`}</strong><span><Icon name="folder" size={12} /> Folder: {data.user.folder}/</span></div><button class="icon-button" on:click={() => { uploadPanelOpen = !uploadPanelOpen; }} aria-label={uploadPanelOpen ? 'Minimize uploads' : 'Expand uploads'}><span>{uploadPanelOpen ? '−' : '+'}</span></button>{#if !activeUploads}<button class="icon-button" on:click={dismissUploads} aria-label="Close uploads"><Icon name="close" size={17} /></button>{/if}</header>{#if activeUploads}<p class="upload-reminder"><Icon name="info" size={16} /><span>Keep this tab open and visible until uploads finish.</span></p>{/if}{#if uploadPanelOpen}<div class="upload-list">{#each uploads as item (item.id)}<div class="upload-row"><span class="upload-file-icon"><Icon name="image" size={21} /></span><div class="upload-item-body"><strong>{item.file.name}</strong><span class:error-text={item.status === 'error'}>{item.status === 'done' ? item.duplicate ? 'Already in collection · skipped' : 'Saved · Immich preview processing' : item.status === 'preparing' ? 'Preparing upload…' : item.status === 'checking' ? 'Checking for duplicates…' : item.status === 'uploading' ? item.progress === 100 ? 'Saving photo…' : `${item.progress}% · ${bytes(item.file.size)}` : item.status === 'error' || item.status === 'retrying' ? item.error : item.status === 'cancelled' ? 'Cancelled' : 'Waiting to upload'}</span>{#if item.status === 'uploading'}<div class="upload-progress"><div style:width={`${item.progress}%`}></div></div>{/if}</div>{#if item.status === 'done'}<span class="upload-success"><Icon name="check" size={18} /></span>{:else if item.status === 'error' || item.status === 'cancelled'}<button class="icon-button" on:click={() => retryUpload(item)} disabled={item.file.size > data.maxUploadBytes} aria-label={`Retry ${item.file.name}`}><Icon name="refresh" size={16} /></button>{:else}<button class="icon-button" on:click={() => cancelUpload(item)} aria-label={`Cancel ${item.file.name}`}><Icon name="close" size={16} /></button>{/if}</div>{/each}</div>{/if}<footer class="upload-actions"><button type="button" class="text-button" on:click={clearSuccessfulUploads} disabled={!completedUploads}><Icon name="check" size={16} />Clear successful</button><button type="button" class="text-button" on:click={retryAllUploads} disabled={!retryableUploads || retryingAll}><Icon name="refresh" size={16} />Retry all</button></footer>{#if queueStorageError && activeUploads}<p class="upload-storage-warning" role="status">Browser recovery storage is unavailable. Keep this tab open.</p>{/if}</section>{/if}
-  <dialog use:modalHistory class="pending-dialog" bind:this={pendingDialog}><button class="icon-button dialog-close" on:click={() => pendingDialog.close()} aria-label="Close photo details"><Icon name="close" /></button>{#if pendingPhoto}<div class="dialog-image"><Icon name="image" size={52} /></div><Badge size="small" color="secondary">Original safely stored</Badge><h2>{pendingPhoto.name}</h2><p>{pendingPhoto.previewStatus === 'pending' ? 'Immich is preparing this photo’s preview. The original is already yours to enjoy.' : 'The Immich preview is currently unavailable. You can still download the original photo.'}</p><div class="dialog-metadata"><span>Shared by {pendingPhoto.owner}</span><span>{bytes(pendingPhoto.bytes)}</span></div><a class="primary-button button-link" href={mediaUrl(pendingPhoto, 'original')} download={pendingPhoto.name}><Icon name="download" size={18} />Download original</a>{/if}</dialog>
+  <dialog use:modalHistory class="pending-dialog" bind:this={pendingDialog}><button class="icon-button dialog-close" on:click={() => pendingDialog.close()} aria-label="Close photo details"><Icon name="close" /></button>{#if pendingPhoto}<div class="dialog-image"><Icon name="image" size={52} /></div><Badge size="small" color="secondary">Original safely stored</Badge><h2>{pendingPhoto.name}</h2><p>{pendingPhoto.previewStatus === 'pending' ? 'Immich is preparing this photo’s preview. The original is already yours to enjoy.' : 'The Immich preview is currently unavailable. You can still download the original photo.'}</p><div class="dialog-metadata"><span>Shared by {pendingPhoto.owner}</span><span>{bytes(pendingPhoto.bytes)}</span></div><a class="primary-button button-link" href={mediaUrl(pendingPhoto, 'original')} download={pendingPhoto.name}><Icon name="download" size={18} />Download original</a>{#if isOwnPhoto(pendingPhoto)}<button type="button" class="text-button delete-button" on:click={() => requestDelete([pendingPhoto!])}><Icon name="delete" size={18} />Delete photo</button>{/if}{/if}</dialog>
 {/if}

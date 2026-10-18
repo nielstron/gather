@@ -392,3 +392,17 @@ export function takeDownloadTicket(member: Member, token: string): unknown {
   const row = db().prepare('DELETE FROM download_tickets WHERE token_hash = ? AND scope = ? AND expires_at > ? RETURNING choice').get(hash(token), uploadScope(member, 'downloads'), Date.now()) as { choice: string } | undefined;
   return row ? JSON.parse(row.choice) : undefined;
 }
+
+
+/** Deleted originals must not be replayed as successful resumable uploads. */
+export function forgetDeletedPhotos(photos: { id: string; relative: string }[]) {
+  const database = db();
+  const receipt = database.prepare("DELETE FROM upload_receipts WHERE json_extract(photo, '$.id') = ?");
+  const checksum = database.prepare('DELETE FROM file_checksums WHERE scope = ?');
+  database.transaction(() => {
+    for (const photo of photos) {
+      receipt.run(photo.id);
+      checksum.run(hash(JSON.stringify([config.photoRoot, photo.relative])));
+    }
+  })();
+}

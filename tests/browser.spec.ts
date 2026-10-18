@@ -9,6 +9,7 @@ import sharp from 'sharp';
 
 let directory: string, origin: string, token: string, server: Server, app: ChildProcess;
 const basePath = process.env.GATHER_BASE_PATH || '';
+let immichOrigin = '';
 let scans = 0;
 let appLog = '';
 let importImage: Buffer, importDownloads = 0;
@@ -105,6 +106,7 @@ test.beforeAll(async () => {
     } catch { response.writeHead(500).end(); }
   });
   const immichPort = await listen(server);
+  immichOrigin = `http://127.0.0.1:${immichPort}`;
   const portProbe = createServer();
   const port = await listen(portProbe);
   await new Promise<void>((resolve) => portProbe.close(() => resolve()));
@@ -1289,5 +1291,85 @@ test('read-only shared collections allow browsing and downloads while rejecting 
   const photos = (await response.json()).photos;
   expect(photos.length).toBeGreaterThan(0);
   expect((await page.request.get(`${collection}/api/media/${photos[0].id}?kind=original`)).ok()).toBe(true);
+  expect((await page.request.delete(`${collection}/api/photos`, { headers: { origin }, data: { photos: [] } })).status()).toBe(403);
   expect(await readdir(root)).toEqual(before);
+});
+
+
+test('contributors confirm individual and bulk deletion while other contributors stay protected', async ({ page }) => {
+  const settings = await import('../src/lib/server/settings');
+  const auth = await import('../src/lib/server/auth');
+  const root = path.join(directory, 'photos', 'delete-gallery');
+  await mkdir(root, { recursive: true });
+  const id = settings.createCollection({ ...settings.readSettings(), photoRoot: root, readOnly: false, collectionName: 'Delete test', immichUrl: immichOrigin, immichApiKey: 'test-preview-key', immichScanApiKey: 'test-scan-key', immichLibraryId: libraryId, immichPhotoRoot: '/external/gather/delete-gallery' });
+  const invitation = settings.withSettings(() => {
+    const own = auth.createMember('Deletion owner', 'owner');
+    auth.createMember('Another contributor', 'other');
+    return own;
+  }, id);
+  for (const [index, name] of ['my-first.png', 'my-second.png', 'my-third.png', 'their.png'].entries()) {
+    const folder = index === 3 ? 'other' : 'owner', relative = `${folder}/${name}`;
+    await writeFile(path.join(root, relative), importImage);
+    const asset = `11111111-2222-4111-8111-${String(index + 1).padStart(12, '0')}`;
+    indexed.set(`/external/gather/delete-gallery/${relative}`, asset); images.set(asset, importImage); dimensions.set(asset, { width: 52, height: 41 });
+  }
+  const collection = `${origin}${basePath}/c/${id}`;
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.route(`${collection}/api/photos?*`, async route => {
+    const response = await route.fetch(), body = await response.json();
+    const pending = body.photos?.find((photo: any) => photo.name === 'my-third.png');
+    if (pending) pending.previewStatus = 'pending';
+    await route.fulfill({ response, json: body });
+  });
+  const previous = `${origin}${basePath}/api/health`;
+  await page.goto(previous);
+  await page.goto(`${collection}/#invite=${invitation.token}`);
+  await expect(page.locator('.photo-tile')).toHaveCount(4);
+  const first = page.getByRole('checkbox', { name: 'Select my-first.png', exact: true });
+  const other = page.getByRole('checkbox', { name: 'Select their.png', exact: true });
+  await first.check(); await other.check();
+  await expect(page.getByRole('button', { name: 'Delete selected photos' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Download', exact: true })).toBeEnabled();
+  const inventory = (await (await page.request.get(`${collection}/api/photos`)).json()).photos;
+  const forged = await page.request.delete(`${collection}/api/photos`, { headers: { origin }, data: { photos: inventory.filter((photo: any) => ['my-first.png', 'their.png'].includes(photo.name)).map(({ id, revision }: any) => ({ id, revision })) } });
+  expect(forged.status()).toBe(403);
+  expect(await readFile(path.join(root, 'owner/my-first.png'))).toEqual(importImage);
+  await other.uncheck();
+  await page.getByRole('button', { name: 'Delete selected photos' }).click();
+  const confirmation = page.getByRole('dialog', { name: 'Delete photo?', exact: true });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
+  expect(await readFile(path.join(root, 'owner/my-first.png'))).toEqual(importImage);
+  await first.uncheck();
+  await page.getByRole('button', { name: 'Open their.png, shared by Another contributor', exact: true }).click();
+  await expect(page.locator('.pswp')).toBeVisible();
+  await expect(page.locator('.pswp').getByRole('button', { name: /^Delete / })).toHaveCount(0);
+  await page.goBack(); await expect(page.locator('.pswp')).not.toBeVisible();
+  await page.getByRole('button', { name: 'Open my-first.png, shared by Deletion owner', exact: true }).click();
+  await page.getByRole('button', { name: 'Delete my-first.png', exact: true }).click();
+  await expect(confirmation).toBeVisible();
+  await page.goBack(); await expect(confirmation).not.toBeVisible();
+  await expect(page.locator('.pswp')).toBeVisible();
+  await page.getByRole('button', { name: 'Delete my-first.png', exact: true }).click();
+  await confirmation.getByRole('button', { name: 'Delete photo', exact: true }).click();
+  await expect(confirmation).not.toBeVisible(); await expect(page.locator('.pswp')).not.toBeVisible();
+  await expect(page.locator('.photo-tile')).toHaveCount(3);
+  expect(await readdir(path.join(root, 'owner'))).not.toContain('my-first.png');
+  await expect.poll(() => page.evaluate(() => !(history.state?.['sveltekit:states']?.modalIds?.length)), { timeout: 3000 }).toBe(true);
+  await page.getByRole('button', { name: 'Open my-third.png, shared by Deletion owner', exact: true }).click();
+  await expect(page.locator('.pending-dialog')).toBeVisible();
+  await page.locator('.pending-dialog').getByRole('button', { name: 'Delete photo', exact: true }).click();
+  await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.goBack(); await expect(page.locator('.pending-dialog')).not.toBeVisible();
+  await page.getByRole('checkbox', { name: 'Select my-second.png', exact: true }).check();
+  await page.getByRole('checkbox', { name: 'Select my-third.png', exact: true }).check();
+  await page.getByRole('button', { name: 'Delete selected photos' }).click();
+  const bulk = page.getByRole('dialog', { name: 'Delete 2 photos?', exact: true });
+  await bulk.getByRole('button', { name: 'Delete photos', exact: true }).click();
+  await expect(bulk).not.toBeVisible(); await expect(page.locator('.photo-tile')).toHaveCount(1);
+  expect(await readdir(path.join(root, 'owner'))).toEqual([]);
+  expect(await readFile(path.join(root, 'other/their.png'))).toEqual(importImage);
+  await expect.poll(() => page.evaluate(() => !(history.state?.['sveltekit:states']?.modalIds?.length))).toBe(true);
+  await page.goBack(); await expect(page).toHaveURL(previous);
+  expect(errors).toEqual([]);
 });

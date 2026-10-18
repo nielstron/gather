@@ -6,16 +6,16 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import sharp from 'sharp';
-import { currentCollectionId } from './settings';
+import { readSettings, currentCollectionId } from './settings';
 import { config } from './config';
-import { readFileChecksum, writeFileChecksum } from './auth';
+import { readFileChecksum, writeFileChecksum, listMembers, forgetDeletedPhotos } from './auth';
 import { createLimiter, createWeightedLimiter, runConcurrentQueue, mapConcurrent } from '../async';
 import type { Member, Photo } from '../types';
 
 const extensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif', '.tif', '.tiff', '.heic', '.heif']);
 const formats = new Set(['jpeg', 'png', 'webp', 'avif', 'gif', 'tiff', 'heif']);
 type ScanCache = { root: string; time: number; photos: Photo[]; ids: Set<string> };
-type ScanState = { cache?: ScanCache; scanning?: Promise<Photo[]>; generation: number; uploaded?: Map<string, Photo> };
+type ScanState = { cache?: ScanCache; scanning?: Promise<Photo[]>; generation: number; removed?: Map<string, string>; uploaded?: Map<string, Photo> };
 const scans = new Map<string, ScanState>();
 // Leave filesystem workers available for uploads, downloads and DNS on slow mounts.
 const scanRequests = createLimiter(4);
@@ -103,7 +103,7 @@ export async function scanPhotos(members: Member[], allowStale = false): Promise
   const state = scanState();
   const attribute = (photos: Photo[]) => {
     const owners = new Map(members.flatMap(member => [member.folder, ...(member.folders || [])].map(folder => [folder.toLowerCase(), member] as const)));
-    return photos.map(photo => {
+    return photos.filter(photo => (!state.removed?.has(photo.id) || state.removed.get(photo.id) !== photo.revision)).map(photo => {
       const originalFolder = decodeId(photo.id).split('/').length > 1 ? decodeId(photo.id).split('/')[0] : '';
       const member = owners.get(originalFolder.toLowerCase());
       return { ...photo, folder: member?.folder || originalFolder, owner: member?.name || originalFolder || 'Shared folder' };
@@ -146,6 +146,7 @@ export async function scanPhotos(members: Member[], allowStale = false): Promise
       photos.splice(0, photos.length, ...known.values());
       state.uploaded = undefined;
     }
+    for (let index = photos.length - 1; index >= 0; index--) if (state.removed?.has(photos[index].id) && state.removed.get(photos[index].id) === photos[index].revision) photos.splice(index, 1);
     if (performance.now() - started > 3_000) console.warn('Gather: slow folder listing', { milliseconds: Math.round(performance.now() - started), photos: photos.length });
     photos.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.id.localeCompare(b.id));
     if (state.generation === startedGeneration) state.cache = { root: config.photoRoot, time: Date.now(), photos, ids: new Set(photos.map(photo => photo.id)) };
@@ -307,4 +308,73 @@ export async function previewPath(id: string): Promise<string> {
     ? scanCache.ids : new Set((await scanPhotos([])).map(photo => photo.id));
   if (!ids.has(id)) throw new MediaError(404, 'Photo not found');
   return relative;
+}
+
+
+export type DeletePhoto = { id: string; revision: string };
+
+/** Authorize the whole request before touching any original. File contents are never read. */
+export async function deletePhotos(member: Member, input: unknown) {
+  if (readSettings().readOnly) throw new MediaError(403, 'This collection is read-only.');
+  const owner = listMembers().find(person => person.id === member.id);
+  if (!owner) throw new MediaError(403, 'You can only delete your own photos.');
+  if (!Array.isArray(input) || !input.length || input.length > 200) throw new MediaError(400, 'Select between 1 and 200 photos to delete.');
+  const folders = new Set([owner.folder, ...(owner.folders || [])].map(folder => folder.toLowerCase()));
+  const targets = new Map<string, DeletePhoto & { relative: string }>();
+  for (const item of input) {
+    if (!item || typeof item.id !== 'string' || typeof item.revision !== 'string' || !/^[A-Za-z0-9_-]{20}$/.test(item.revision)) throw new MediaError(400, 'Select photos with their current versions.');
+    const relative = decodeId(item.id), parts = relative.split('/');
+    if (parts.length < 2 || !folders.has(parts[0].toLowerCase())) throw new MediaError(403, 'You can only delete your own photos.');
+    if (targets.has(item.id) && targets.get(item.id)!.revision !== item.revision) throw new MediaError(400, 'Conflicting photo versions.');
+    targets.set(item.id, { id: item.id, revision: item.revision, relative });
+  }
+  const opened: { target: DeletePhoto & { relative: string }; file?: Awaited<ReturnType<typeof openPhoto>> }[] = [];
+  try {
+    await mapConcurrent([...targets.values()], 4, async target => {
+      try {
+        await checkedDirectory(target.relative.split('/').slice(0, -1));
+        const stat = await lstat(path.join(config.photoRoot, target.relative));
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new MediaError(404, 'Photo not found.');
+      } catch (error) {
+        // Retrying a lost success response is safe, including after a folder was removed.
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') { opened.push({ target }); return; }
+        throw error;
+      }
+      const file = await openPhoto(target.id);
+      opened.push({ target, file });
+      if (file.revision !== target.revision) throw new MediaError(409, 'A selected photo changed. Refresh the gallery before deleting it.');
+    });
+    const deleted: string[] = [], failed: { id: string; error: string }[] = [];
+    await mapConcurrent(opened, 4, async ({ target, file }) => {
+      try {
+        if (file) {
+          await checkedDirectory(target.relative.split('/').slice(0, -1));
+          const stat = await lstat(path.join(config.photoRoot, target.relative));
+          const original = await file.handle.stat();
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.ino !== original.ino || stat.dev !== original.dev || photoRevision(target.relative, stat) !== target.revision) throw new MediaError(409, 'This photo changed. Refresh the gallery before deleting it.');
+          await unlink(path.join(config.photoRoot, target.relative));
+        }
+        deleted.push(target.id);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') deleted.push(target.id);
+        else failed.push({ id: target.id, error: error instanceof MediaError ? error.message : 'The photo could not be deleted. Please retry.' });
+      }
+    });
+    if (deleted.length) {
+      const state = scanState();
+      state.removed ||= new Map();
+      for (const id of deleted) {
+        state.removed.set(id, targets.get(id)!.revision);
+        state.uploaded?.delete(id);
+        state.cache?.ids.delete(id);
+      }
+      while (state.removed.size > 20_000) state.removed.delete(state.removed.keys().next().value!);
+      if (state.cache) state.cache.photos = state.cache.photos.filter(photo => !deleted.includes(photo.id));
+      invalidatePhotos();
+      forgetDeletedPhotos(deleted.map(id => targets.get(id)!));
+    }
+    return { deleted, failed };
+  } finally {
+    await Promise.allSettled(opened.map(({ file }) => file?.handle.close()));
+  }
 }

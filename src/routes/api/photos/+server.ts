@@ -1,9 +1,9 @@
 import { sortPhotos } from '$lib/sort';
 import { json } from '@sveltejs/kit';
 import { listMembers } from '$lib/server/auth';
-import { scanPhotos, invalidatePhotos, MediaError } from '$lib/server/media';
+import { deletePhotos, scanPhotos, invalidatePhotos, MediaError } from '$lib/server/media';
 import { validateSearch } from '$lib/search';
-import { enrichPhotos, enrichPhotoDates, searchCollection } from '$lib/server/immich';
+import { enrichPhotos, enrichPhotoDates, searchCollection, requestLibraryScan } from '$lib/server/immich';
 import { apiError, boundedText } from '$lib/server/http';
 import type { RequestHandler } from './$types';
 
@@ -56,5 +56,18 @@ export const POST: RequestHandler = async (event) => {
     const url = new URL(event.url);
     url.search = params.toString();
     return await GET({ ...event, url });
+  } catch (error) { return apiError(error); }
+};
+
+
+export const DELETE: RequestHandler = async ({ request, locals }) => {
+  try {
+    if (!locals.user) throw new MediaError(401, 'Open your invitation link to sign in.');
+    let body: unknown;
+    try { body = JSON.parse(await boundedText(request, 1024 * 1024)); }
+    catch (error) { if ((error as { status?: number }).status === 413) throw error; throw new MediaError(400, 'Invalid delete request.'); }
+    const result = await deletePhotos(locals.user, (body as { photos?: unknown } | null)?.photos);
+    if (result.deleted.length) void requestLibraryScan().catch(() => {});
+    return json(result);
   } catch (error) { return apiError(error); }
 };
