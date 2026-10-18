@@ -14,6 +14,7 @@
   import { installProgressiveImages } from '$lib/progressive-viewer';
   import SortPicker from '$lib/components/SortPicker.svelte';
   import SearchFilters from '$lib/components/SearchFilters.svelte';
+  import ImportPhotos from '$lib/components/ImportPhotos.svelte';
   import type { CollectionSearch } from '$lib/search';
   import Thumbnail from '$lib/components/Thumbnail.svelte';
   import Icon from '$lib/components/Icon.svelte';
@@ -564,6 +565,7 @@
         <button class="identity-button mobile-identity" on:click={openProfile} aria-label={`Change name for ${data.user.name}`} aria-haspopup="dialog" title={`Change name: ${data.user.name}`}><span class="identity-icon"><Icon name="user" size={22} /></span><span class="identity-name">{data.user.name}</span></button>
         <div class="breadcrumb"><Icon name="folder" size={16} /><span>{data.collectionName}</span><Icon name="chevron" size={13} /><strong>{pageTitle}</strong></div>
         <label class="search-input"><Icon name="search" size={18} /><input type="search" aria-label="Search photos" bind:this={searchInput} on:focus={() => searchActive = true} on:click={() => searchActive = true} aria-controls="search-controls" placeholder="Describe a scene, place, or moment…" bind:value={query} on:input={search} /><span class="search-hint">{searchOptions.mode === 'semantic' ? 'by meaning' : searchOptions.mode === 'filename' ? 'by filename' : 'descriptions'}</span></label>
+        <ImportPhotos {base} name={data.user.name} collectionName={data.collectionName} on:changed={() => void loadPhotos()} />
         <Button class="primary-button top-upload" onclick={() => input.click()}><Icon name="upload" size={17} /><span>Upload photos</span></Button>
       </header>
       <div id="search-controls" class="search-controls" class:visible={searchActive} bind:this={searchControls}>

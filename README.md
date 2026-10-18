@@ -8,7 +8,7 @@ Browser Back and phone back gestures close the current photo preview or modal be
 
 ## Start locally
 
-Requires Node 22.17 or newer.
+Requires Node 22.17 or newer. For memory-constrained Node builds, `GATHER_PRECOMPRESS=false npm run build` skips generating gzip/Brotli assets; use compression at your reverse proxy when serving that build. Normal builds generate precompressed assets.
 
 ```bash
 npm ci
@@ -29,6 +29,14 @@ Sign in once at **/admin**. Use **+ New collection**, enter its name, browse to 
 The original collection stays at the existing application URL, with its existing settings, invitations, guest sessions, and originals preserved. Additional galleries use `/c/<collection-id>/` under the configured base URL, and their admin pages use `/c/<collection-id>/admin`. Media, searches, uploads, and downloads carry that collection path too. Signing into or out of one gallery does not change another gallery’s guest session, including in separate tabs. Administrator sign-in is shared across all collections.
 
 New collection settings and authentication databases live privately under `DATA_ROOT/collections/<id>/`; `DATA_ROOT/collections.json` stores the collection IDs. The default collection continues using the existing `settings.json` and `auth.sqlite`. Back up the complete data directory. Changing a collection’s folder still revokes only that collection’s previous guest access; creating or switching collections does not revoke existing invitations. Collection folders may overlap only if the administrator deliberately chooses overlapping roots; everything within each selected root is shared with that collection.
+
+## Import from a shared link
+
+Open a collection and click **Import from link** (the download icon on phones). Paste a public Google Photos album link, choose **Preview album**, then **Import photos**. The preview shows the complete photo count before anything is downloaded. Imports go into your own uploads in the current collection; invitations and other contributors’ folders are not changed. Videos are excluded. An album can contain up to 1,000 items, and the usual per-file upload size and image validation limits apply.
+
+Progress continues on the server after closing the dialog or browser. Two photos download concurrently; temporary failures retry automatically. **Cancel import** stops remaining work without deleting saved photos; **Retry remaining photos** keeps completed results. Import state is stored privately in each collection’s `imports.sqlite`; interrupted work resumes when its owner next opens the collection. Back closes the import dialog while the job continues.
+
+Identical contents are skipped across the collection. Previously imported Google sources are checked against existing local files before another media download, so repeating an album usually transfers no photo data. Removed local files are imported again. Google supplies the downloadable copies: this does not guarantee byte-identical camera originals. Albums requiring Google sign-in are not supported. The importer reads Google’s public sharing pages and album pagination endpoint; it does not use a Google account or modify the source album. Changes to Google’s web format can require an importer update; unreadable or incomplete albums fail preview rather than silently importing only the first page.
 
 ## Search
 

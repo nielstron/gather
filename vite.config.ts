@@ -5,5 +5,5 @@ import adapter from '@sveltejs/adapter-node';
 import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
-  plugins: [tailwindcss(), sveltekit({ adapter: adapter(), paths: { base: normalizeBasePath(process.env.GATHER_BASE_PATH), relative: false } })]
+  plugins: [tailwindcss(), sveltekit({ adapter: adapter({ precompress: process.env.GATHER_PRECOMPRESS !== 'false' }), paths: { base: normalizeBasePath(process.env.GATHER_BASE_PATH), relative: false } })]
 });

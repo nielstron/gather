@@ -11,6 +11,8 @@ let directory: string, origin: string, token: string, server: Server, app: Child
 const basePath = process.env.GATHER_BASE_PATH || '';
 let scans = 0;
 let appLog = '';
+let importImage: Buffer, importDownloads = 0;
+let importGate: Promise<void> | undefined;
 const indexed = new Map<string, string>();
 const images = new Map<string, Buffer>();
 const dimensions = new Map<string, { width: number; height: number }>();
@@ -56,8 +58,13 @@ test.beforeAll(async () => {
     await utimes(filename, modifiedAt, modifiedAt);
   }
   await indexFiles();
+  importImage = await sharp({ create: { width: 52, height: 41, channels: 3, background: '#dfb120' } }).png().toBuffer();
   server = createServer(async (request, response) => {
     try {
+      if (request.url === '/google-import-photo') {
+        importDownloads++; if (importGate) await importGate;
+        response.writeHead(200, { 'content-type': 'image/png', 'content-length': importImage.length, 'content-disposition': 'attachment;filename="imported-from-link.png"' }).end(importImage); return;
+      }
       const key = request.headers['x-api-key'];
       if (request.url === `/api/libraries/${libraryId}/scan/path` && request.method === 'POST') {
         if (key !== 'test-scan-key') { response.writeHead(403).end(); return; }
@@ -102,9 +109,9 @@ test.beforeAll(async () => {
   const port = await listen(portProbe);
   await new Promise<void>((resolve) => portProbe.close(() => resolve()));
   origin = `http://127.0.0.1:${port}`;
-  app = spawn(process.execPath, ['build'], { cwd: process.cwd(), env: { ...process.env,
+  app = spawn(process.execPath, ['--import', path.resolve('tests/google-import-upstream.mjs'), 'build'], { cwd: process.cwd(), env: { ...process.env,
     NODE_ENV: 'production', HOST: '127.0.0.1', PORT: String(port), ORIGIN: origin, COOKIE_SECURE: 'false',
-    BODY_SIZE_LIMIT: '52M', IMMICH_URL: `http://127.0.0.1:${immichPort}`, IMMICH_API_KEY: 'test-preview-key',
+    IMPORT_TEST_UPSTREAM: `http://127.0.0.1:${immichPort}`, BODY_SIZE_LIMIT: '52M', IMMICH_URL: `http://127.0.0.1:${immichPort}`, IMMICH_API_KEY: 'test-preview-key',
     IMMICH_SCAN_API_KEY: 'test-scan-key', IMMICH_LIBRARY_ID: libraryId, IMMICH_PHOTO_ROOT: '/external/gather'
   }, stdio: ['ignore', 'pipe', 'pipe'] });
   app.stdout?.on('data', (chunk) => { appLog += chunk; });
@@ -757,6 +764,56 @@ test('search defaults to semantic relevance, combines people and conditions, and
   await expect(page.getByRole('heading', { name: 'No matching photos' })).toBeVisible();
 });
 
+
+test('imports a Google Photos link through the UI, continues after Back, and skips repeat transfers', async ({ page, request }, testInfo) => {
+  const auth = await import('../src/lib/server/auth');
+  const invite = auth.createMember('Album importer', 'album-importer');
+  const session = auth.exchangeInvite(invite.token)!;
+  await page.context().addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
+  expect((await request.get(`${origin}${basePath}/api/import`)).status()).toBe(401);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${origin}${basePath}/`);
+  await page.getByRole('button', { name: 'Import from link', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Import from link', exact: true });
+  await page.getByLabel('Shared album link', { exact: true }).fill('https://127.0.0.1/private');
+  await page.getByRole('button', { name: 'Preview album', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('shared Google Photos');
+  await page.getByLabel('Shared album link', { exact: true }).fill('https://photos.app.goo.gl/GatherImportFixture');
+  await page.getByRole('button', { name: 'Preview album', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: 'Google Photos trip', exact: true })).toBeVisible();
+  await expect(dialog).toContainText('Ready to import');
+  await expect(dialog).toContainText(`Collection: ${(await page.title()).replace(/ · Gather$/, '')}`);
+  await page.screenshot({ path: testInfo.outputPath('import-mobile.png') });
+  expect(importDownloads).toBe(0);
+  let release!: () => void;
+  importGate = new Promise<void>(resolve => release = resolve);
+  try {
+    await page.getByRole('button', { name: 'Import 2 photos', exact: true }).click();
+    await expect.poll(() => importDownloads).toBe(2);
+    const url = page.url();
+    await page.goBack();
+    await expect(dialog).not.toBeVisible();
+    expect(page.url()).toBe(url);
+    release(); importGate = undefined;
+    await expect.poll(async () => (await readdir(path.join(directory, 'photos', invite.member.folder))).length).toBe(1);
+    expect((await readFile(path.join(directory, 'photos', invite.member.folder, 'imported-from-link.png'))).equals(importImage)).toBe(true);
+    await page.getByRole('button', { name: 'Import from link', exact: true }).click();
+    await expect(dialog).toContainText('Import complete');
+    await expect(dialog).toContainText('1 imported · 1 duplicates skipped');
+    const jobs = (await (await page.request.get(`${origin}${basePath}/api/import`)).json()).jobs;
+    expect(JSON.stringify(jobs)).not.toContain('googleusercontent');
+    expect(jobs[0].total).toBe(2);
+    await page.getByRole('button', { name: 'Preview album', exact: true }).click();
+    await expect(dialog).toContainText('Ready to import');
+    await page.getByRole('button', { name: 'Import 2 photos', exact: true }).click();
+    await expect(dialog.locator('.job-status')).toHaveText('Import complete');
+    await expect(dialog.locator('.job-counts')).toHaveText('0 imported · 2 duplicates skipped');
+    expect(importDownloads).toBe(2);
+    expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.getByRole('button', { name: 'Close import', exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+  } finally { release(); importGate = undefined; }
+});
 
 test('a single iPhone tap on the circle selects and deselects ready and pending photos', async ({ browser }) => {
   const auth = await import('../src/lib/server/auth');
