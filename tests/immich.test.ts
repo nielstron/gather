@@ -409,6 +409,20 @@ test('people and face coordinates are discovered only from shared assets, with s
   assert.equal(requests.length, 2, 'both collection people and face coordinates are cached');
 });
 
+test('people names are returned without waiting for portrait requests or fetching EXIF', async () => {
+  configure();
+  handler = (req, res, body) => {
+    assert.equal(req.url, '/api/search/metadata', 'the fast names request must never fetch faces');
+    assert.equal(body.withExif, false);
+    json(res, [asset(undefined, { people: [{ id: ASSET, name: 'Alice' }] })]);
+  };
+  const people = await collectionPeople([photo()], undefined, false);
+  assert.equal(people[0].name, 'Alice');
+  assert.equal(people[0].count, 1);
+  assert.equal(people[0].face, undefined);
+  assert.equal(requests.length, 1);
+});
+
 test('people filters work with a restricted key even if face crops are unavailable', async () => {
   configure();
   handler = (req, res) => req.url === '/api/search/metadata' ? json(res, [asset(undefined, { people: [{ id: ASSET, name: 'Alice' }] })]) : res.writeHead(403).end();

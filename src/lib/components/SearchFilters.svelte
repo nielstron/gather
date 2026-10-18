@@ -34,6 +34,10 @@
   let orderField = '';
   let orderDirection: 'asc' | 'desc' = 'desc';
   let controller: AbortController | undefined;
+  let portraitsLoading = false;
+  let portraitsLoaded = false;
+  $: if (visible && !peopleLoaded && !peopleLoading && !peopleError) void loadPeople();
+  $: if (visible && open && peopleLoaded && !portraitsLoaded && !portraitsLoading) void loadPortraits();
   $: semanticActive = mode === 'semantic' && !!(query.trim() || queryAssetId.trim());
   $: filterCount = Object.keys(value.filter || {}).length;
   $: visiblePeople = people.filter(person => (person.name || 'Unnamed person').toLowerCase().includes(peopleQuery.toLowerCase()));
@@ -46,15 +50,29 @@
       const response = await fetch(`${base}/api/search/people`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(25_000)]) });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || 'People could not be loaded.');
-      people = body.people; peopleLoaded = true;
+      people = body.people; peopleLoaded = true; portraitsLoaded = false;
     } catch (error) { if (!controller.signal.aborted) peopleError = error instanceof Error ? error.message : 'People could not be loaded.'; }
     finally { peopleLoading = false; }
+  }
+  async function loadPortraits() {
+    portraitsLoading = true;
+    const signal = controller!.signal;
+    try {
+      const response = await fetch(`${base}/api/search/people?faces=1`, { signal: AbortSignal.any([signal, AbortSignal.timeout(8_000)]) });
+      if (!response.ok) return;
+      const body = await response.json();
+      if (signal.aborted) return;
+      // Keep the immediately usable list and selections while portraits arrive.
+      const faces = new Map<string, SearchPerson>(body.people.map((person: SearchPerson) => [person.id, person]));
+      people = people.map(person => ({ ...person, ...(faces.get(person.id)?.face ? { face: faces.get(person.id)!.face } : {}) }));
+    } catch { /* A missing portrait must not interrupt people search. */ }
+    finally { portraitsLoaded = true; portraitsLoading = false; }
   }
   async function showFilters(peopleFirst = false) {
     open = true;
     if (!peopleLoaded) void loadPeople();
     await tick();
-    (peopleFirst ? peopleInput : modeInput)?.focus();
+    (peopleFirst ? peopleInput : modeInput)?.focus({ preventScroll: true });
   }
   function addRow(group: number) { groups = groups.map((rows, index) => index === group ? [...rows, { id: ++sequence, field: 'takenAt', op: 'gte', value: '', empty: false }] : rows); }
   function removeRow(group: number, id: number) { groups = groups.map((rows, index) => index === group ? rows.filter(row => row.id !== id) : rows); }
@@ -118,7 +136,7 @@
     <section class="people-filter" aria-label="People filter">
       <div class="filter-heading"><h3><Icon name="people" size={19} />People in these photos</h3><button class="text-button" type="button" on:click={loadPeople} disabled={peopleLoading}>Refresh people</button></div>
       <div class="people-controls"><input type="search" aria-label="Find a person" bind:this={peopleInput} placeholder="Find a person…" bind:value={peopleQuery} /><label class="filter-label">Match<select aria-label="People match" bind:value={peopleMatch}><option value="all">All selected people</option><option value="any">Any selected person</option><option value="none">Exclude selected people</option></select></label></div>
-      {#if peopleLoading}<p class="filter-help" role="status">Loading people…</p>{:else if peopleError}<p class="error-text" role="alert">{peopleError}</p>{:else if !people.length}<p class="filter-help">No recognized people in this collection yet. Faces appear after Immich finishes face recognition.</p>{:else}
+      {#if peopleLoading && !peopleLoaded}<p class="filter-help" role="status">Loading people…</p>{:else if peopleError}<p class="error-text" role="alert">{peopleError}</p>{:else if !people.length}<p class="filter-help">No recognized people in this collection yet. Faces appear after Immich finishes face recognition.</p>{:else}
         <div class="people-options">{#each visiblePeople as person (person.id)}<button type="button" class="face-option" class:chosen={selectedPeople.includes(person.id)} aria-pressed={selectedPeople.includes(person.id)} aria-label={`${person.name || 'Unnamed person'} (${person.count} photos)`} on:click={() => togglePerson(person.id)}><span class="face-image">{#if person.face}<Thumbnail src={`${base}/api/media/${person.photoId}?kind=thumbnail&v=${encodeURIComponent(person.revision || '')}`} imageStyle={faceStyle(person)} alt="" />{:else}<Icon name="user" size={25} />{/if}</span><span>{person.name || 'Unnamed person'}<small>{person.count} {person.count === 1 ? 'photo' : 'photos'}</small></span>{#if selectedPeople.includes(person.id)}<Icon name="check" size={18} />{/if}</button>{/each}</div>
         {#if !visiblePeople.length}<p class="filter-help">No people match that name.</p>{/if}
       {/if}

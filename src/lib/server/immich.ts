@@ -344,7 +344,7 @@ async function searchSharedAssets(photos: Photo[], options: import('../search').
     filter.description = { ...filter.description, like: `%${query}%` };
   }
   const semantic = !people && options.mode === 'semantic' && !!(query || options.queryAssetId);
-  const body: Record<string, unknown> = { filter, size: semantic ? options.resultLimit || 1000 : 1000, withExif: true,
+  const body: Record<string, unknown> = { filter, size: semantic ? options.resultLimit || 1000 : 1000, withExif: !people,
     ...(semantic ? { ...(query ? { query } : {}), ...(options.queryAssetId ? { queryAssetId: options.queryAssetId } : {}), ...(options.language ? { language: options.language } : {}) }
       : { withPeople: people, withStacked: people ? true : options.withStacked ?? true, ...(options.orderBy ? { orderBy: options.orderBy } : {}) }) };
   // Similarity references must themselves belong to the shared folder.
@@ -424,7 +424,7 @@ export async function searchCollection(photos: Photo[], query: string, options: 
 
 const faceCache = new Map<string, { expires: number; faces: Record<string, any>[] }>();
 
-export async function collectionPeople(photos: Photo[], signal?: AbortSignal): Promise<import('../search').SearchPerson[]> {
+export async function collectionPeople(photos: Photo[], signal?: AbortSignal, withFaces = true): Promise<import('../search').SearchPerson[]> {
   const result = await searchSharedAssets(photos, { mode: 'metadata' }, '', true, signal);
   const config = configuration()!;
   const byPath = new Map(photos.map(photo => [originalPath(config, decodePhotoId(photo.id)), photo]));
@@ -447,20 +447,23 @@ export async function collectionPeople(photos: Photo[], signal?: AbortSignal): P
   // Crop only faces from a shared original, never a person's global portrait.
   // Older/limited keys can still filter people by name without face.read.
   const representatives = new Map<string, string>();
-  for (const person of people.values()) {
+  const assetsByPath = new Map(result.items.map(item => [item.originalPath, item]));
+  for (const person of withFaces ? people.values() : []) {
     if (person.face) continue;
     const original = originalPath(config, decodePhotoId(person.photoId));
-    const asset = result.items.find(item => item.originalPath === original);
+    const asset = assetsByPath.get(original);
     if (asset) representatives.set(person.photoId, asset.id as string);
   }
   let denied = false;
-  await mapConcurrent([...representatives], 4, async ([photoId, assetId]) => {
-    if (denied) return;
+  // Portrait enrichment is optional and must never hold up usable names and filters.
+  const faceSignal = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(4_000)]);
+  await mapConcurrent(withFaces ? [...representatives] : [], 4, async ([photoId, assetId]) => {
+    if (denied || faceSignal.aborted) return;
     const key = `${config.signature}:${assetId}`;
     let faces = faceCache.get(key);
     try {
       if (!faces || faces.expires <= Date.now()) {
-        const response = await metadataRequests(() => request(config, `/faces?id=${encodeURIComponent(assetId)}`, {}, signal));
+        const response = await metadataRequests(() => request(config, `/faces?id=${encodeURIComponent(assetId)}`, {}, faceSignal));
         if (!response.ok) { await response.body?.cancel(); if (response.status === 403) denied = true; return; }
         const data = await response.json();
         if (!Array.isArray(data)) return;

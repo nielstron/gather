@@ -37,6 +37,8 @@
   let searchActive = false;
   let searchInput: HTMLInputElement;
   let searchControls: HTMLDivElement;
+  let searchHeaderHeight = 72;
+  let searchViewportHeight: number | undefined;
   function dismissSearch(event: MouseEvent) {
     const field = searchInput?.closest('.search-input');
     // The clicked control may remove itself (for example, Clear people).
@@ -497,6 +499,12 @@
   function handleDrop(event: DragEvent) { event.preventDefault(); dragging = false; if (event.dataTransfer?.files) addUploads(event.dataTransfer.files); }
 
   onMount(() => {
+    const viewport = window.visualViewport;
+    const resizeSearchViewport = () => { searchViewportHeight = viewport ? viewport.height + viewport.offsetTop : window.innerHeight; };
+    resizeSearchViewport();
+    viewport?.addEventListener('resize', resizeSearchViewport);
+    viewport?.addEventListener('scroll', resizeSearchViewport);
+    window.addEventListener('resize', resizeSearchViewport);
     const fragment = new URLSearchParams(location.hash.slice(1));
     const invite = fragment.get('invite');
     const shared = fragment.get('share');
@@ -513,7 +521,7 @@
         void loadPhotos();
       }
     }, 7_000);
-    return () => { disposed = true; galleryRequest?.abort(); for (const timer of retryTimers.values()) clearTimeout(timer); retryTimers.clear(); clearInterval(interval); clearTimeout(searchTimer); clearTimeout(dragTimer); viewer?.destroy(); uploads.forEach((item) => { item.controller?.abort(); item.xhr?.abort(); }); };
+    return () => { viewport?.removeEventListener('resize', resizeSearchViewport); viewport?.removeEventListener('scroll', resizeSearchViewport); window.removeEventListener('resize', resizeSearchViewport); disposed = true; galleryRequest?.abort(); for (const timer of retryTimers.values()) clearTimeout(timer); retryTimers.clear(); clearInterval(interval); clearTimeout(searchTimer); clearTimeout(dragTimer); viewer?.destroy(); uploads.forEach((item) => { item.controller?.abort(); item.xhr?.abort(); }); };
   });
 </script>
 
@@ -561,7 +569,8 @@
       </div>
     </aside>
     <main class="main-content">
-      <header class="topbar">
+      <div class="search-header" style:--search-header-height={`${searchHeaderHeight}px`} style:--search-viewport-height={searchViewportHeight ? `${searchViewportHeight}px` : '100dvh'}>
+      <header class="topbar" bind:clientHeight={searchHeaderHeight}>
         <button class="identity-button mobile-identity" on:click={openProfile} aria-label={`Change name for ${data.user.name}`} aria-haspopup="dialog" title={`Change name: ${data.user.name}`}><span class="identity-icon"><Icon name="user" size={22} /></span><span class="identity-name">{data.user.name}</span></button>
         <div class="breadcrumb"><Icon name="folder" size={16} /><span>{data.collectionName}</span><Icon name="chevron" size={13} /><strong>{pageTitle}</strong></div>
         <label class="search-input"><Icon name="search" size={18} /><input type="search" aria-label="Search photos" bind:this={searchInput} on:focus={() => searchActive = true} on:click={() => searchActive = true} aria-controls="search-controls" placeholder="Describe a scene, place, or moment…" bind:value={query} on:input={search} /><span class="search-hint">{searchOptions.mode === 'semantic' ? 'by meaning' : searchOptions.mode === 'filename' ? 'by filename' : 'descriptions'}</span></label>
@@ -570,6 +579,7 @@
       </header>
       <div id="search-controls" class="search-controls" class:visible={searchActive} bind:this={searchControls}>
         <SearchFilters {query} visible={searchActive} bind:this={searchFilters} bind:value={searchOptions} on:apply={(event) => { searchOptions = event.detail; selected = new Set(); photos = []; sort = 'relevance'; sortDirection = searchOptions.orderBy?.direction || 'desc'; void loadPhotos(); }} />
+      </div>
       </div>
       <section class="gallery-section" aria-label="Photo collection" style:padding-bottom={uploads.length ? `${uploadPanelHeight + 48}px` : undefined}>
         <h1 class="sr-only">{pageTitle}</h1>

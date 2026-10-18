@@ -765,6 +765,49 @@ test('search defaults to semantic relevance, combines people and conditions, and
 });
 
 
+test('search tools stay in view after scrolling and people remain usable while portraits are stalled', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invite = auth.createMember('Scrolled search', 'scrolled-search');
+  const session = auth.exchangeInvite(invite.token)!;
+  await page.context().addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let portraitsRequested = false;
+  await page.route('**/api/search/people?faces=1', async route => {
+    portraitsRequested = true;
+    await gate;
+    await route.fulfill({ json: { people: [] } });
+  });
+  try {
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto(`${origin}${basePath}/`);
+      await expect(page.locator('.photo-tile').first()).toBeVisible();
+      await page.locator('.gallery-section').evaluate(element => { (element as HTMLElement).style.minHeight = '3000px'; });
+      await page.evaluate(() => window.scrollTo(0, 1100));
+      const search = page.getByLabel('Search photos', { exact: true });
+      await expect(search).toBeInViewport();
+      await search.click();
+      await expect(page.getByRole('button', { name: 'People', exact: true })).toBeInViewport();
+      expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(900);
+      await page.getByRole('button', { name: 'People', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Alice face (1 photos)', exact: true })).toBeVisible();
+      await expect(page.getByLabel('Find a person', { exact: true })).toBeInViewport();
+      expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(900);
+      await expect.poll(() => portraitsRequested).toBe(true);
+      await page.getByLabel('Find a person', { exact: true }).fill('Alice');
+      await page.getByRole('button', { name: 'Alice face (1 photos)', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Alice face (1 photos)', exact: true })).toHaveAttribute('aria-pressed', 'true');
+      const panel = await page.locator('.search-controls').boundingBox();
+      expect(panel!.y + panel!.height).toBeLessThanOrEqual(844);
+      await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
+      await expect(page.locator('.photo-tile')).toHaveCount(1);
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('button', { name: 'People', exact: true })).toBeHidden();
+    }
+  } finally { release(); await page.unrouteAll({ behavior: 'wait' }); }
+});
+
 test('imports a Google Photos link through the UI, continues after Back, and skips repeat transfers', async ({ page, request }, testInfo) => {
   const auth = await import('../src/lib/server/auth');
   const invite = auth.createMember('Album importer', 'album-importer');
