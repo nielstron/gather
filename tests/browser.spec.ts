@@ -832,10 +832,15 @@ test('a large upload resumes from its saved byte offset after leaving and reopen
     await expect(page.locator('.photo-tile').first()).toBeVisible();
     await page.locator('input[type="file"]').setInputFiles({ name: 'resumed-after-return.png', mimeType: 'image/png', buffer: payload });
     await expect.poll(() => held).toBe(true);
+    const reminder = page.getByText('Keep this tab open and visible until uploads finish.', { exact: true });
+    await expect(reminder).toBeVisible();
+    await page.getByRole('button', { name: 'Minimize uploads', exact: true }).click();
+    await expect(reminder).toBeVisible();
     await page.goto(`${origin}${basePath}/admin`);
     release();
     await page.goto(`${origin}${basePath}/`);
     await expect(page.locator('.upload-panel')).toContainText('Saved · Immich preview processing', { timeout: 20_000 });
+    await expect(page.getByText('Keep this tab open and visible until uploads finish.', { exact: true })).toHaveCount(0);
     expect(offsets.filter(offset => offset === 0)).toHaveLength(1);
     expect(new Set(ids).size).toBe(1);
     expect((await readFile(path.join(directory, 'photos', 'resume-chunks', 'resumed-after-return.png'))).equals(payload)).toBe(true);
