@@ -22,7 +22,7 @@ Until you choose a collection, the default gallery is empty. Uploads and origina
 
 ## Search
 
-The search bar uses Immich CLIP semantic search by default: describe a scene, place, or moment. Results stay ordered by relevance; the sort controls can reverse relevance or switch to filename/date order. With no query or filters, browsing still includes photos waiting for Immich indexing.
+The search bar uses Immich CLIP semantic search by default: describe a scene, place, or moment. Results stay ordered by relevance; the sort picker has direction controls at the top and filename/date/relevance choices below. With no query or filters, browsing still includes photos waiting for Immich indexing.
 
 Open **Filters & people** for a searchable face picker (all / any / exclude), all current Immich structured search fields and operators, and alternative condition groups. Filters cover dates, location, camera/lens, OCR, description, ratings, favorites, media type, visibility, file size, album/tag/person IDs, checksums, paths, and other indexing fields. More options include search language, similarity to another image in this collection, semantic result limit (up to Immich’s 1,000-result maximum), metadata ordering, and stacked photos. **Filename and contributor** mode retains local, case-insensitive filename search. **Description text** mode searches descriptions, and OCR is available as a condition.
 

@@ -137,26 +137,35 @@ test('shared link, editable names, private gallery, Immich scan, uploads and ori
   await expect(page.locator('.photo-tile img')).toHaveCount(3);
   await expect.poll(() => page.locator('.photo-tile img').evaluateAll((images) => images.every((image) => (image as HTMLImageElement).naturalWidth > 0))).toBe(true);
   await expect(page.locator('.timeline-group')).toHaveCount(2);
-  await page.getByLabel('Sort photos').selectOption('name');
+  await page.getByRole('button', { name: 'Sort photos', exact: true }).click();
+  await expect(page.getByRole('menu', { name: 'Sort photos' }).getByRole('menuitemradio')).toHaveText(['Ascending', 'Descending', 'Filename', 'Date/time']);
+  await page.getByRole('menuitemradio', { name: 'Ascending', exact: true }).click();
+  await page.getByRole('menuitemradio', { name: 'Filename', exact: true }).click();
   await expect(page.locator('.timeline-group')).toHaveCount(1);
   await expect.poll(() => page.locator('.photo-open img').evaluateAll(images => images.map(image => image.getAttribute('alt')))).toEqual(['weekend-0.jpg', 'weekend-1.jpg', 'weekend-2.jpg']);
-  await page.getByRole('button', { name: 'Sort descending', exact: true }).click();
+  await page.getByRole('menuitemradio', { name: 'Descending', exact: true }).click();
   await expect.poll(() => page.locator('.photo-open img').evaluateAll(images => images.map(image => image.getAttribute('alt')))).toEqual(['weekend-2.jpg', 'weekend-1.jpg', 'weekend-0.jpg']);
 
+  await expect(page.getByRole('button', { name: /^Sort (ascending|descending)$/ })).toHaveCount(0);
   await expect(page.locator('.timeline-date')).toHaveCount(0);
-  await page.getByLabel('Sort photos').selectOption('relevance');
+  await page.getByRole('menuitemradio', { name: 'Date/time', exact: true }).click();
   await expect(page.locator('.timeline-group')).toHaveCount(2);
   await expect(page.locator('.photo-open img').first()).toHaveAttribute('alt', 'weekend-1.jpg');
-  await page.getByRole('button', { name: 'Sort ascending', exact: true }).click();
+  await page.getByRole('menuitemradio', { name: 'Ascending', exact: true }).click();
   await expect(page.locator('.photo-open img').first()).toHaveAttribute('alt', 'weekend-2.jpg');
   // Sorting applies to the whole collection before page slicing.
   const firstOldest = await (await page.request.get(`${origin}${basePath}/api/photos?sort=date&direction=asc&limit=1`)).json();
   expect(firstOldest.photos.map((photo: { name: string }) => photo.name)).toEqual(['weekend-2.jpg']);
   const secondByName = await (await page.request.get(`${origin}${basePath}/api/photos?sort=name&direction=desc&offset=1&limit=1`)).json();
   expect(secondByName.photos.map((photo: { name: string }) => photo.name)).toEqual(['weekend-1.jpg']);
-  await page.getByRole('button', { name: 'Sort descending', exact: true }).click();
+  await page.getByRole('menuitemradio', { name: 'Descending', exact: true }).click();
   await expect(page.locator('.photo-open img').first()).toHaveAttribute('alt', 'weekend-1.jpg');
 
+  await expect(page.getByRole('menuitemradio', { name: 'Date/time', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByRole('menuitemradio', { name: 'Descending', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('menu', { name: 'Sort photos' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Sort photos', exact: true })).toBeFocused();
   const selection = page.getByRole('checkbox', { name: 'Select weekend-0.jpg', exact: true });
   await selection.check();
   await expect(page.locator('.selection-bar')).toContainText('1 selected');

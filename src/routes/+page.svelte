@@ -8,6 +8,7 @@
   import justifiedLayout from 'justified-layout';
   import PhotoSwipe from 'photoswipe';
   import { installProgressiveImages } from '$lib/progressive-viewer';
+  import SortPicker from '$lib/components/SortPicker.svelte';
   import SearchFilters from '$lib/components/SearchFilters.svelte';
   import type { CollectionSearch } from '$lib/search';
   import Thumbnail from '$lib/components/Thumbnail.svelte';
@@ -70,6 +71,8 @@
   $: selectionAction = allSelected ? 'Deselect all' : photos.length > 200 ? 'Select first 200' : 'Select all';
   $: hasSearch = !!query.trim() || !!Object.keys(searchOptions.filter || {}).length || !!searchOptions.queryAssetId;
   $: semanticQuery = searchOptions.mode === 'semantic' && !!(query.trim() || searchOptions.queryAssetId);
+  $: sortChoice = `${sort === 'relevance' && !semanticQuery && !searchOptions.orderBy ? 'newest' : sort}:${sortDirection}`;
+  $: sortLabel = sortChoice.startsWith('name:') ? `Filename · ${sortDirection === 'asc' ? 'A–Z (ascending)' : 'Z–A (descending)'}` : sortChoice.startsWith('relevance:') ? `${searchOptions.orderBy ? 'Search order' : 'Relevance'} · ${sortDirection === 'asc' ? 'Ascending' : 'Descending'}` : `Date added · ${sortDirection === 'asc' ? 'Oldest first (ascending)' : 'Newest first (descending)'}`;
   $: sortedPhotos = searchOrder ? photos : sortPhotos(photos, sort, sortDirection);
   $: photoIndexes = new Map(sortedPhotos.map((photo, index) => [photo.id, index]));
   $: timelineGroups = groupTimeline(sortedPhotos, galleryWidth, searchOrder ? 'name' : sort);
@@ -560,8 +563,7 @@
             </div>
             <div class="collection-actions">
               {#if photos.length}<button class="icon-button select-all" class:active={allSelected} on:click={() => { selected = allSelected ? new Set() : new Set(photos.slice(0, 200).map((photo) => photo.id)); }} aria-label={selectionAction} title={selectionAction} aria-pressed={allSelected}><Icon name="select-all" size={20} /></button>{/if}
-              <label class="icon-button sort-control" title={`Sort by: ${sort === 'name' ? 'Filename' : semanticQuery ? 'Relevance' : 'Date added'}`}><span class="sr-only">Sort photos</span><Icon name="sort" size={20} /><select value={sort} on:change={(event) => { sort = event.currentTarget.value; sortDirection = sort === 'name' ? 'asc' : 'desc'; changeSort(); }}><option value="relevance">{searchOptions.orderBy ? 'Search order' : semanticQuery ? 'Relevance' : 'Date added'}</option>{#if semanticQuery || searchOptions.orderBy}<option value="newest">Date added</option>{/if}<option value="name">Filename</option></select></label>
-              <button class="icon-button" on:click={() => { sortDirection = sortDirection === 'asc' ? 'desc' : 'asc'; changeSort(); }} aria-label={sortDirection === 'asc' ? 'Sort descending' : 'Sort ascending'} title={sortDirection === 'asc' ? 'Ascending — switch to descending' : 'Descending — switch to ascending'}><Icon name={sortDirection === 'asc' ? 'sort-ascending' : 'sort-descending'} size={20} /></button>
+              <SortPicker field={sortChoice.split(':')[0]} direction={sortDirection} label={sortLabel} relevanceLabel={searchOptions.orderBy ? 'Search order' : semanticQuery ? 'Relevance' : ''} on:change={(event) => { sort = event.detail.field; sortDirection = event.detail.direction; changeSort(); }} />
               <button class="icon-button" on:click={() => loadPhotos()} disabled={loading} aria-label="Refresh photos" title="Refresh photos">{#if loading}<span class="small-spinner" aria-hidden="true"></span>{:else}<Icon name="refresh" size={18} />{/if}</button>
             </div>
           </div>
