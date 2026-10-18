@@ -251,3 +251,12 @@ This prototype supports up to 100 collections in one Node process, up to 20,000 
 - [Justified Layout](https://flickr.github.io/justified-layout/)
 
 No source was copied from the Immich application. The reusable UI package is consumed as a dependency.
+
+
+### Upload recovery
+
+Selected photos are queued in IndexedDB on the visitor's device, isolated by member, collection, and shared-folder configuration. Queues resume when that member returns, including after a reload. Finished/cancelled files are removed from browser storage; recovery records expire after seven days. If browser storage is unavailable or full, uploads still work and the interface asks the visitor to keep the page open.
+
+Files larger than 1 MiB use resumable 1 MiB chunks. Complete chunks are retained in the server's local data directory; interrupted requests never advance the saved offset. Once the file arrives, saving and Immich scanning continue independently of the browser connection. Abandoned server buffers expire after 24 hours and are cleaned when uploads start; staged resumable files have a shared 1 GiB budget.
+
+Mobile operating systems, particularly iOS, can suspend background websites. Gather requests a screen wake lock while visible and uploading where supported, and resumes on return. A website cannot guarantee uninterrupted uploads while the phone is locked or another app is foregrounded. Browser recovery storage is best effort and can be removed by browser storage eviction or clearing site data.

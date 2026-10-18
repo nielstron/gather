@@ -1,10 +1,11 @@
 import { readSettings } from '$lib/server/settings';
 import { config } from '$lib/server/config';
-import { listMembers } from '$lib/server/auth';
+import { listMembers, uploadScope } from '$lib/server/auth';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = ({ locals }) => ({
   user: locals.user,
+  uploadOwnerScope: locals.user ? uploadScope(locals.user, 'browser-queue') : '',
   members: locals.user ? listMembers() : [],
   collectionName: config.collectionName,
   maxUploadBytes: config.maxUploadBytes,

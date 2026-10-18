@@ -4,6 +4,8 @@
   import { collectionBase } from '$lib/collection-path';
   $: base = collectionBase($page.url.pathname, appBase);
   import { mdiDownload } from '@mdi/js';
+  import { saveQueuedUpload, updateQueuedUpload, removeQueuedUpload, restoreQueuedUploads } from '$lib/upload-queue';
+  import { transferResumable, TransferError } from '$lib/resumable-upload';
   import { sortPhotos } from '$lib/sort';
   import { mapConcurrent } from '$lib/async';
   import { onMount } from 'svelte';
@@ -20,8 +22,8 @@
   import Icon from '$lib/components/Icon.svelte';
   import type { Member, Photo, PhotoList } from '$lib/types';
 
-  export let data: { user: Member | null; members: Member[]; collectionName: string; maxUploadBytes: number; immichConfigured: boolean };
-  type Upload = { id: string; file: File; progress: number; status: 'waiting' | 'checking' | 'uploading' | 'retrying' | 'done' | 'error' | 'cancelled'; attempts?: number; duplicate?: boolean; error?: string; xhr?: XMLHttpRequest; checksum?: string; controller?: AbortController };
+  export let data: { user: Member | null; members: Member[]; collectionName: string; uploadOwnerScope: string; maxUploadBytes: number; immichConfigured: boolean };
+  type Upload = { id: string; file: File; progress: number; status: 'preparing' | 'waiting' | 'checking' | 'uploading' | 'retrying' | 'done' | 'error' | 'cancelled'; attempts?: number; duplicate?: boolean; error?: string; xhr?: XMLHttpRequest; checksum?: string; controller?: AbortController };
   let photos: Photo[] = [];
   let folders: PhotoList['folders'] = [];
   let total = 0;
@@ -73,6 +75,44 @@
   let uploadPanelHeight = 0;
   let uploading = false;
   let disposed = false;
+  let queueStorageError = false;
+  let restoringUploads = true;
+  let wakeLock: WakeLockSentinel | undefined;
+  let requestingWakeLock = false;
+  const uploadWatchdogs = new Set<() => void>();
+  const uploadQueueWaiters = new Set<() => void>();
+  function wakeUploadWorkers() { for (const resolve of uploadQueueWaiters) resolve(); uploadQueueWaiters.clear(); }
+  $: queueScope = data.uploadOwnerScope ? `${base}:${data.uploadOwnerScope}` : '';
+  $: if (typeof window !== 'undefined') void keepUploadsAwake(activeUploads > 0);
+  async function keepUploadsAwake(active: boolean) {
+    if (!active || document.hidden) { await wakeLock?.release().catch(() => {}); wakeLock = undefined; return; }
+    if (wakeLock?.released) wakeLock = undefined;
+    if (wakeLock || requestingWakeLock || !navigator.wakeLock) return;
+    requestingWakeLock = true;
+    try { const lock = await navigator.wakeLock.request('screen'); if (disposed || document.hidden || !activeUploads) await lock.release(); else wakeLock = lock; }
+    catch { /* Background suspension is handled by the persistent recovery queue. */ }
+    finally { requestingWakeLock = false; }
+  }
+  async function recoverUploads() {
+    if (queueScope) {
+      try {
+        const saved = await restoreQueuedUploads(queueScope);
+        if (disposed) return;
+        const existing = new Set(uploads.map(item => item.id));
+        uploads = [...saved.filter(item => !existing.has(item.id)).map(item => ({ id: item.id, file: item.file, checksum: item.checksum, status: item.error ? 'error' as const : 'waiting' as const, error: item.error, progress: 0 })), ...uploads];
+      } catch { queueStorageError = true; }
+    }
+    restoringUploads = false;
+    if (!disposed) void processUploads();
+  }
+  function uploadVisibilityChanged() {
+    if (!document.hidden) {
+      void keepUploadsAwake(activeUploads > 0);
+      for (const touch of uploadWatchdogs) touch();
+      for (const item of uploads.filter(item => item.status === 'retrying')) updateUpload(item.id, { attempts: 0 });
+      resumeUploads();
+    }
+  }
   const checkingContent = new Map<string, Promise<void>>();
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let dragging = false;
@@ -99,7 +139,7 @@
   $: photoIndexes = new Map(sortedPhotos.map((photo, index) => [photo.id, index]));
   $: timelineGroups = groupTimeline(sortedPhotos, galleryWidth, searchOrder ? 'name' : sort);
   $: completedUploads = uploads.filter((upload) => upload.status === 'done').length;
-  $: activeUploads = uploads.filter((upload) => upload.status === 'waiting' || upload.status === 'checking' || upload.status === 'uploading' || upload.status === 'retrying').length;
+  $: activeUploads = uploads.filter((upload) => upload.status === 'preparing' || upload.status === 'waiting' || upload.status === 'checking' || upload.status === 'uploading' || upload.status === 'retrying').length;
   $: totalFolderPhotos = folders.reduce((sum, entry) => sum + entry.count, 0);
 
   function dayLabel(date: Date) {
@@ -348,20 +388,39 @@
     activeViewer.init();
   }
 
-  function addUploads(files: FileList | File[]) {
+  async function addUploads(files: FileList | File[]) {
     if (!data.user) return;
-    const items: Upload[] = Array.from(files).map((file) => ({ id: crypto.randomUUID(), file, progress: 0, status: file.size > data.maxUploadBytes ? 'error' : 'waiting', error: file.size > data.maxUploadBytes ? `This file exceeds the ${bytes(data.maxUploadBytes)} limit.` : undefined }));
+    const items: Upload[] = Array.from(files).map((file) => ({ id: crypto.randomUUID(), file, progress: 0, status: file.size > data.maxUploadBytes ? 'error' : 'preparing', error: file.size > data.maxUploadBytes ? `This file exceeds the ${bytes(data.maxUploadBytes)} limit.` : undefined }));
     uploads = [...uploads, ...items];
     uploadPanelOpen = true;
-    void processUploads();
+    await mapConcurrent(items, 2, async item => {
+      if (item.status === 'error' || uploads.find(entry => entry.id === item.id)?.status === 'cancelled') return;
+      try { await saveQueuedUpload(queueScope, item.id, item.file); }
+      catch { queueStorageError = true; }
+      if (disposed || uploads.find(entry => entry.id === item.id)?.status === 'cancelled') return;
+      updateUpload(item.id, { status: 'waiting' });
+      void processUploads();
+    });
   }
 
-  function updateUpload(id: string, patch: Partial<Upload>) { uploads = uploads.map((item) => item.id === id ? { ...item, ...patch } : item); }
+  function updateUpload(id: string, patch: Partial<Upload>) {
+    uploads = uploads.map((item) => item.id === id ? { ...item, ...patch } : item);
+    wakeUploadWorkers();
+    if (!queueScope) return;
+    if (patch.status === 'done' || patch.status === 'cancelled') void removeQueuedUpload(queueScope, id).catch(() => {});
+    else if (patch.checksum || patch.status === 'error' || patch.status === 'waiting') {
+      void updateQueuedUpload(queueScope, id, { ...(patch.checksum ? { checksum: patch.checksum } : {}), ...(patch.status === 'error' || patch.status === 'waiting' ? { error: patch.status === 'error' ? patch.error : undefined } : {}) }).catch(() => { queueStorageError = true; });
+    }
+  }
 
   function scheduleRetry(id: string, message: string, retryAfter = 0) {
     const item = uploads.find(entry => entry.id === id);
     if (!item || disposed || item.status === 'cancelled') return;
     const attempts = item.attempts || 0;
+    if (document.hidden) {
+      updateUpload(id, { status: 'retrying', xhr: undefined, error: 'Paused by the browser. Resuming when you return…' });
+      return;
+    }
     if (attempts >= 6) {
       updateUpload(id, { status: 'error', error: `${message} Automatic retries exhausted. Please retry.`, xhr: undefined });
       return;
@@ -388,12 +447,13 @@
   }
 
   async function processUploads() {
-    if (uploading || disposed || !data.user || !uploads.some(item => item.status === 'waiting')) return;
+    if (uploading || restoringUploads || disposed || !data.user || !uploads.some(item => item.status === 'waiting')) return;
     uploading = true;
     const completedBefore = uploads.filter((entry) => entry.status === 'done').length;
     await Promise.all(Array.from({ length: 2 }, async () => {
-      while (!disposed && uploads.some((item) => item.status === 'waiting')) {
-        const item = uploads.find((entry) => entry.status === 'waiting')!;
+      while (!disposed && uploads.some((item) => item.status === 'waiting' || item.status === 'preparing')) {
+        const item = uploads.find((entry) => entry.status === 'waiting');
+        if (!item) { await new Promise<void>(resolve => uploadQueueWaiters.add(resolve)); continue; }
         if (!navigator.onLine) { scheduleRetry(item.id, 'Waiting for connection…'); continue; }
         const controller = new AbortController();
         updateUpload(item.id, { status: 'checking', attempts: (item.attempts || 0) + 1, controller, error: undefined, progress: 0 });
@@ -434,6 +494,12 @@
             updateUpload(item.id, { status: 'done', duplicate: true, progress: 100 });
             continue;
           }
+          if (item.file.size > 1024 * 1024) {
+            updateUpload(item.id, { status: 'uploading' });
+            const photo = await transferResumable({ base, id: item.id, ownerScope: data.uploadOwnerScope, file: item.file, checksum, signal: controller.signal, progress: progress => updateUpload(item.id, { progress }) });
+            updateUpload(item.id, { status: 'done', duplicate: !!photo?.duplicate, progress: 100 });
+            continue;
+          }
           await new Promise<void>((resolve) => {
             const xhr = new XMLHttpRequest();
             updateUpload(item.id, { status: 'uploading', xhr });
@@ -445,8 +511,9 @@
             // Detect a stalled connection without timing out a file that is still transferring.
             let watchdog: ReturnType<typeof setTimeout>;
             let stalled = false;
-            const touch = () => { clearTimeout(watchdog); watchdog = setTimeout(() => { stalled = true; xhr.abort(); }, 90_000); };
-            const finish = () => { clearTimeout(watchdog); resolve(); };
+            const touch = () => { clearTimeout(watchdog); watchdog = setTimeout(() => { if (document.hidden) { touch(); return; } stalled = true; xhr.abort(); }, 90_000); };
+            const finish = () => { clearTimeout(watchdog); uploadWatchdogs.delete(touch); resolve(); };
+            uploadWatchdogs.add(touch);
             xhr.upload.onprogress = (event) => { touch(); if (event.lengthComputable) updateUpload(item.id, { progress: Math.round(event.loaded / event.total * 100) }); };
             xhr.onprogress = touch;
             xhr.onload = () => {
@@ -462,14 +529,18 @@
             };
             xhr.onerror = () => { scheduleRetry(item.id, 'Connection interrupted.'); finish(); };
             xhr.onabort = () => {
+              if (disposed) { finish(); return; }
               if (stalled) scheduleRetry(item.id, 'Connection timed out.');
               else updateUpload(item.id, { status: 'cancelled', xhr: undefined });
               finish();
             };
             touch(); xhr.send(item.file);
           });
-        } catch {
-          if (!controller.signal.aborted && !disposed) scheduleRetry(item.id, 'Duplicate check interrupted.');
+        } catch (error) {
+          if (!controller.signal.aborted && !disposed) {
+            if (error instanceof TransferError && error.status < 500 && ![408, 409, 425, 429].includes(error.status)) updateUpload(item.id, { status: 'error', error: error.message });
+            else scheduleRetry(item.id, error instanceof TransferError ? error.message : uploads.find(entry => entry.id === item.id)?.status === 'checking' ? 'Duplicate check interrupted.' : 'Connection interrupted.');
+          }
         } finally {
           if (contentKey && checkingContent.get(contentKey) === reservation) checkingContent.delete(contentKey);
           releaseContent?.();
@@ -485,11 +556,26 @@
     }
   }
 
-  function retryUpload(item: Upload) { if (item.file.size > data.maxUploadBytes) return; updateUpload(item.id, { status: 'waiting', attempts: 0, error: undefined }); void processUploads(); }
+  async function retryUpload(item: Upload) {
+    if (item.file.size > data.maxUploadBytes) return;
+    const id = item.status === 'cancelled' ? crypto.randomUUID() : item.id;
+    uploads = uploads.map(entry => entry.id === item.id ? { ...entry, id, status: 'preparing', attempts: 0, error: undefined } : entry);
+    try { await saveQueuedUpload(queueScope, id, item.file); } catch { queueStorageError = true; }
+    if (disposed || uploads.find(entry => entry.id === id)?.status === 'cancelled') return;
+    updateUpload(id, { status: 'waiting', checksum: item.checksum }); void processUploads();
+  }
+  function dismissUploads() {
+    for (const item of uploads) {
+      if (item.status === 'error') cancelUpload(item);
+      else void removeQueuedUpload(queueScope, item.id).catch(() => {});
+    }
+    uploads = [];
+  }
   function cancelUpload(item: Upload) {
     clearTimeout(retryTimers.get(item.id)); retryTimers.delete(item.id);
     item.controller?.abort();
     if (item.xhr) item.xhr.abort(); else updateUpload(item.id, { status: 'cancelled' });
+    if (item.file.size > 1024 * 1024) void fetch(`${base}/api/upload/resumable/${item.id}`, { method: 'DELETE' }).catch(() => {});
   }
   function handleDrag(event: DragEvent) {
     if (!data.user || !event.dataTransfer?.types.includes('Files')) return;
@@ -499,6 +585,13 @@
   function handleDrop(event: DragEvent) { event.preventDefault(); dragging = false; if (event.dataTransfer?.files) addUploads(event.dataTransfer.files); }
 
   onMount(() => {
+    void recoverUploads();
+    const protectUnsavedUploads = (event: BeforeUnloadEvent) => {
+      if (activeUploads && (queueStorageError || uploads.some(item => item.status === 'preparing'))) { event.preventDefault(); event.returnValue = ''; }
+    };
+    window.addEventListener('beforeunload', protectUnsavedUploads);
+    document.addEventListener('visibilitychange', uploadVisibilityChanged);
+    window.addEventListener('pageshow', uploadVisibilityChanged);
     const viewport = window.visualViewport;
     const resizeSearchViewport = () => { searchViewportHeight = viewport ? viewport.height + viewport.offsetTop : window.innerHeight; };
     resizeSearchViewport();
@@ -521,7 +614,7 @@
         void loadPhotos();
       }
     }, 7_000);
-    return () => { viewport?.removeEventListener('resize', resizeSearchViewport); viewport?.removeEventListener('scroll', resizeSearchViewport); window.removeEventListener('resize', resizeSearchViewport); disposed = true; galleryRequest?.abort(); for (const timer of retryTimers.values()) clearTimeout(timer); retryTimers.clear(); clearInterval(interval); clearTimeout(searchTimer); clearTimeout(dragTimer); viewer?.destroy(); uploads.forEach((item) => { item.controller?.abort(); item.xhr?.abort(); }); };
+    return () => { window.removeEventListener('beforeunload', protectUnsavedUploads); document.removeEventListener('visibilitychange', uploadVisibilityChanged); window.removeEventListener('pageshow', uploadVisibilityChanged); void wakeLock?.release().catch(() => {}); viewport?.removeEventListener('resize', resizeSearchViewport); viewport?.removeEventListener('scroll', resizeSearchViewport); window.removeEventListener('resize', resizeSearchViewport); disposed = true; wakeUploadWorkers(); galleryRequest?.abort(); for (const timer of retryTimers.values()) clearTimeout(timer); retryTimers.clear(); clearInterval(interval); clearTimeout(searchTimer); clearTimeout(dragTimer); viewer?.destroy(); uploads.forEach((item) => { item.controller?.abort(); item.xhr?.abort(); }); };
   });
 </script>
 
@@ -643,6 +736,6 @@
     <button class="text-button profile-sign-out" on:click={signOut} disabled={savingProfile}><Icon name="logout" size={17} />Sign out</button>
   </dialog>
   {#if dragging}<div class="drop-overlay"><div><span class="drop-icon"><Icon name="upload" size={42} /></span><h2>Drop your moments here</h2><p>Uploading to <strong>{data.user.name}’s folder</strong></p><span>Everyone in the collection can view and download them.</span></div></div>{/if}
-  {#if uploads.length}<section class="upload-panel" bind:clientHeight={uploadPanelHeight} aria-label="Upload progress" aria-live="polite"><header><span class="upload-panel-icon"><Icon name={activeUploads ? 'upload' : 'check'} size={19} /></span><div><strong>{activeUploads ? `Uploading ${uploads.length - completedUploads} ${uploads.length - completedUploads === 1 ? 'photo' : 'photos'}` : `${completedUploads} of ${uploads.length} finished${uploads.some(item => item.duplicate) ? ` · ${uploads.filter(item => item.duplicate).length} skipped` : ''}`}</strong><span><Icon name="folder" size={12} /> Folder: {data.user.folder}/</span></div><button class="icon-button" on:click={() => { uploadPanelOpen = !uploadPanelOpen; }} aria-label={uploadPanelOpen ? 'Minimize uploads' : 'Expand uploads'}><span>{uploadPanelOpen ? '−' : '+'}</span></button>{#if !activeUploads}<button class="icon-button" on:click={() => { uploads = []; }} aria-label="Close uploads"><Icon name="close" size={17} /></button>{/if}</header>{#if uploadPanelOpen}<div class="upload-list">{#each uploads as item (item.id)}<div class="upload-row"><span class="upload-file-icon"><Icon name="image" size={21} /></span><div class="upload-item-body"><strong>{item.file.name}</strong><span class:error-text={item.status === 'error'}>{item.status === 'done' ? item.duplicate ? 'Already in collection · skipped' : 'Saved · Immich preview processing' : item.status === 'checking' ? 'Checking for duplicates…' : item.status === 'uploading' ? `${item.progress}% · ${bytes(item.file.size)}` : item.status === 'error' || item.status === 'retrying' ? item.error : item.status === 'cancelled' ? 'Cancelled' : 'Waiting to upload'}</span>{#if item.status === 'uploading'}<div class="upload-progress"><div style:width={`${item.progress}%`}></div></div>{/if}</div>{#if item.status === 'done'}<span class="upload-success"><Icon name="check" size={18} /></span>{:else if item.status === 'error' || item.status === 'cancelled'}<button class="icon-button" on:click={() => retryUpload(item)} disabled={item.file.size > data.maxUploadBytes} aria-label={`Retry ${item.file.name}`}><Icon name="refresh" size={16} /></button>{:else}<button class="icon-button" on:click={() => cancelUpload(item)} aria-label={`Cancel ${item.file.name}`}><Icon name="close" size={16} /></button>{/if}</div>{/each}</div><footer>Shared with everyone in this collection.</footer>{/if}</section>{/if}
+  {#if uploads.length}<section class="upload-panel" bind:clientHeight={uploadPanelHeight} aria-label="Upload progress" aria-live="polite"><header><span class="upload-panel-icon"><Icon name={activeUploads ? 'upload' : 'check'} size={19} /></span><div><strong>{activeUploads ? `Uploading ${uploads.length - completedUploads} ${uploads.length - completedUploads === 1 ? 'photo' : 'photos'}` : `${completedUploads} of ${uploads.length} finished${uploads.some(item => item.duplicate) ? ` · ${uploads.filter(item => item.duplicate).length} skipped` : ''}`}</strong><span><Icon name="folder" size={12} /> Folder: {data.user.folder}/</span></div><button class="icon-button" on:click={() => { uploadPanelOpen = !uploadPanelOpen; }} aria-label={uploadPanelOpen ? 'Minimize uploads' : 'Expand uploads'}><span>{uploadPanelOpen ? '−' : '+'}</span></button>{#if !activeUploads}<button class="icon-button" on:click={dismissUploads} aria-label="Close uploads"><Icon name="close" size={17} /></button>{/if}</header>{#if uploadPanelOpen}<div class="upload-list">{#each uploads as item (item.id)}<div class="upload-row"><span class="upload-file-icon"><Icon name="image" size={21} /></span><div class="upload-item-body"><strong>{item.file.name}</strong><span class:error-text={item.status === 'error'}>{item.status === 'done' ? item.duplicate ? 'Already in collection · skipped' : 'Saved · Immich preview processing' : item.status === 'preparing' ? 'Preparing upload…' : item.status === 'checking' ? 'Checking for duplicates…' : item.status === 'uploading' ? item.progress === 100 ? 'Saving photo…' : `${item.progress}% · ${bytes(item.file.size)}` : item.status === 'error' || item.status === 'retrying' ? item.error : item.status === 'cancelled' ? 'Cancelled' : 'Waiting to upload'}</span>{#if item.status === 'uploading'}<div class="upload-progress"><div style:width={`${item.progress}%`}></div></div>{/if}</div>{#if item.status === 'done'}<span class="upload-success"><Icon name="check" size={18} /></span>{:else if item.status === 'error' || item.status === 'cancelled'}<button class="icon-button" on:click={() => retryUpload(item)} disabled={item.file.size > data.maxUploadBytes} aria-label={`Retry ${item.file.name}`}><Icon name="refresh" size={16} /></button>{:else}<button class="icon-button" on:click={() => cancelUpload(item)} aria-label={`Cancel ${item.file.name}`}><Icon name="close" size={16} /></button>{/if}</div>{/each}</div><footer>{queueStorageError ? 'Browser recovery storage is unavailable. Keep this page open until uploads finish.' : 'Uploads resume when you return. Keep this page visible for uninterrupted uploads on mobile.'}</footer>{/if}</section>{/if}
   <dialog use:modalHistory class="pending-dialog" bind:this={pendingDialog}><button class="icon-button dialog-close" on:click={() => pendingDialog.close()} aria-label="Close photo details"><Icon name="close" /></button>{#if pendingPhoto}<div class="dialog-image"><Icon name="image" size={52} /></div><Badge size="small" color="secondary">Original safely stored</Badge><h2>{pendingPhoto.name}</h2><p>{pendingPhoto.previewStatus === 'pending' ? 'Immich is preparing this photo’s preview. The original is already yours to enjoy.' : 'The Immich preview is currently unavailable. You can still download the original photo.'}</p><div class="dialog-metadata"><span>Shared by {pendingPhoto.owner}</span><span>{bytes(pendingPhoto.bytes)}</span></div><a class="primary-button button-link" href={mediaUrl(pendingPhoto, 'original')} download={pendingPhoto.name}><Icon name="download" size={18} />Download original</a>{/if}</dialog>
 {/if}

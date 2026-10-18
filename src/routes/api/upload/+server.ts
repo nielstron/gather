@@ -27,7 +27,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       return json({ photo: cached || await running!.promise }, { status: 200 });
     }
     const work = (async () => {
-      const photo = await saveUpload(locals.user!, name, request.body, request.signal);
+      const photo = await saveUpload(locals.user!, name, request.body);
       if (scope) writeUploadReceipt(scope, fingerprint, photo);
       // Processing continues even when the browser loses the response.
       if (!photo.duplicate) void requestLibraryScan().then((result) => {

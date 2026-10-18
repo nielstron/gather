@@ -808,6 +808,93 @@ test('search tools stay in view after scrolling and people remain usable while p
   } finally { release(); await page.unrouteAll({ behavior: 'wait' }); }
 });
 
+test('a large upload resumes from its saved byte offset after leaving and reopening the page', async ({ page, request }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invitation = auth.createMember('Resume chunks', 'resume-chunks');
+  const session = auth.exchangeInvite(invitation.token)!;
+  await page.context().addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
+  expect((await request.put(`${origin}${basePath}/api/upload/resumable/unauthorized-upload`, { headers: { origin }, data: {} })).status()).toBe(401);
+  const { randomBytes } = await import('node:crypto');
+  const payload = await sharp(randomBytes(1024 * 1024 * 3), { raw: { width: 1024, height: 1024, channels: 3 } }).png().toBuffer();
+  const offsets: number[] = [], ids: string[] = [];
+  let held = false, release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/upload/resumable/*', async route => {
+    if (route.request().method() === 'PATCH') {
+      const offset = Number(route.request().headers()['upload-offset']);
+      offsets.push(offset); ids.push(route.request().url().split('/').at(-1)!);
+      if (offset === 1024 * 1024 && !held) { held = true; await gate; await route.abort().catch(() => {}); return; }
+    }
+    await route.continue();
+  });
+  try {
+    await page.goto(`${origin}${basePath}/`);
+    await expect(page.locator('.photo-tile').first()).toBeVisible();
+    await page.locator('input[type="file"]').setInputFiles({ name: 'resumed-after-return.png', mimeType: 'image/png', buffer: payload });
+    await expect.poll(() => held).toBe(true);
+    await page.goto(`${origin}${basePath}/admin`);
+    release();
+    await page.goto(`${origin}${basePath}/`);
+    await expect(page.locator('.upload-panel')).toContainText('Saved · Immich preview processing', { timeout: 20_000 });
+    expect(offsets.filter(offset => offset === 0)).toHaveLength(1);
+    expect(new Set(ids).size).toBe(1);
+    expect((await readFile(path.join(directory, 'photos', 'resume-chunks', 'resumed-after-return.png'))).equals(payload)).toBe(true);
+    await page.reload();
+    await expect(page.locator('.photo-tile').first()).toBeVisible();
+    await expect(page.locator('.upload-panel')).toHaveCount(0);
+  } finally { release(); await page.unrouteAll({ behavior: 'wait' }); }
+});
+
+test('recovery files belong to the signed-in member and a small interrupted upload survives reload', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const first = auth.exchangeInvite(auth.createMember('Queue owner', 'queue-owner').token)!;
+  const second = auth.exchangeInvite(auth.createMember('Other queue owner', 'queue-other').token)!;
+  const cookie = (session: typeof first) => ({ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` });
+  await page.context().addCookies([cookie(first)]);
+  const payload = await sharp({ create: { width: 32, height: 31, channels: 3, background: '#a78931' } }).png().toBuffer();
+  let attempts = 0;
+  await page.route('**/api/upload', async route => {
+    attempts++;
+    if (attempts === 1) { await route.fulfill({ status: 503, headers: { 'retry-after': '60' }, json: { error: 'Temporarily unavailable.' } }); return; }
+    await route.continue();
+  });
+  await page.goto(`${origin}${basePath}/`);
+  await expect(page.locator('.photo-tile').first()).toBeVisible();
+  await page.locator('input[type="file"]').setInputFiles({ name: 'private-recovery.png', mimeType: 'image/png', buffer: payload });
+  await expect(page.locator('.upload-panel')).toContainText('Retrying automatically');
+  await page.context().addCookies([cookie(second)]);
+  await page.reload();
+  await expect(page.locator('.photo-tile').first()).toBeVisible();
+  await expect(page.locator('.upload-panel')).toHaveCount(0);
+  expect(attempts).toBe(1);
+  await page.context().addCookies([cookie(first)]);
+  await page.reload();
+  await expect(page.locator('.upload-panel')).toContainText('Saved · Immich preview processing');
+  expect(attempts).toBe(2);
+  expect((await readdir(path.join(directory, 'photos', 'queue-other'))).length).toBe(0);
+  expect((await readFile(path.join(directory, 'photos', 'queue-owner', 'private-recovery.png'))).equals(payload)).toBe(true);
+});
+
+test('background suspension pauses retries and returning resumes without exhausting the retry budget', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const session = auth.exchangeInvite(auth.createMember('Background resume', 'background-resume').token)!;
+  await page.context().addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
+  await page.clock.install();
+  let attempts = 0;
+  await page.route('**/api/upload', async route => { attempts++; if (attempts === 1) await route.abort(); else await route.continue(); });
+  await page.goto(`${origin}${basePath}/`);
+  await expect(page.locator('.photo-tile').first()).toBeVisible();
+  await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); });
+  const payload = await sharp({ create: { width: 35, height: 34, channels: 3, background: '#b6317e' } }).png().toBuffer();
+  await page.locator('input[type="file"]').setInputFiles({ name: 'background-return.png', mimeType: 'image/png', buffer: payload });
+  await expect(page.locator('.upload-panel')).toContainText('Resuming when you return');
+  await page.clock.fastForward(300_000);
+  expect(attempts).toBe(1);
+  await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); document.dispatchEvent(new Event('visibilitychange')); });
+  await expect(page.locator('.upload-panel')).toContainText('Saved · Immich preview processing');
+  expect(attempts).toBe(2);
+});
+
 test('imports a Google Photos link through the UI, continues after Back, and skips repeat transfers', async ({ page, request }, testInfo) => {
   const auth = await import('../src/lib/server/auth');
   const invite = auth.createMember('Album importer', 'album-importer');
@@ -1014,8 +1101,13 @@ test('one admin creates and switches collections while guest access, files, and 
     const secondInvite = await page.getByRole('textbox', { name: 'Generated invitation link' }).inputValue();
     expect(new URL(secondInvite).pathname).toBe(`${collectionBase}/`);
     const secondPage = await guest.newPage();
+    const collectionErrors: string[] = [];
+    secondPage.on('pageerror', error => collectionErrors.push(error.message));
     await secondPage.goto(secondInvite);
-    await expect(secondPage.locator('.photo-tile')).toHaveCount(1);
+    await expect(secondPage.locator('.photo-tile')).toHaveCount(1, { timeout: 10_000 }).catch(async error => {
+      console.log(JSON.stringify({ collectionErrors, url: secondPage.url(), body: await secondPage.locator('body').innerText(), appLog: appLog.slice(-3000) }));
+      throw error;
+    });
     const both = await Promise.all([firstPage.request.get(`${origin}${basePath}/api/photos`), secondPage.request.get(`${secondApi}/photos`)]);
     const [one, two] = await Promise.all(both.map(response => response.json()));
     expect(one.photos.map((photo: any) => photo.name).sort()).toEqual(['weekend-0.jpg', 'weekend-1.jpg']);
