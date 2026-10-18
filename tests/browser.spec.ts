@@ -176,7 +176,7 @@ test('shared link, editable names, private gallery, Immich scan, uploads and ori
   const selection = page.getByRole('checkbox', { name: 'Select weekend-0.jpg', exact: true });
   await selection.check();
   await expect(page.locator('.selection-bar')).toContainText('1 selected');
-  await expect(page.getByRole('button', { name: 'Download originals', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Download', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Clear selection', exact: true }).click();
   await expect(selection).not.toBeChecked();
   await expect(page.locator('.selection-bar')).toHaveCount(0);
@@ -1024,7 +1024,7 @@ test('a single iPhone tap on the circle selects and deselects ready and pending 
     const pending = await tapCircle('weekend-1.jpg');
     await expect(pending).toBeChecked();
     await expect(page.locator('.pending-dialog')).not.toBeVisible();
-    await expect(page.getByRole('button', { name: 'Download originals', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Download', exact: true })).toBeVisible();
     await tapCircle('weekend-0.jpg');
     await expect(page.locator('.selection-bar')).toContainText('2 selected');
   } finally { await context.close(); }
