@@ -13,6 +13,7 @@ export type Photo = {
   previewStatus: 'ready' | 'pending' | 'unavailable';
 };
 export type PhotoList = {
+  searchTruncated?: boolean;
   photos: Photo[];
   members: Member[];
   folders: { folder: string; name: string; count: number }[];

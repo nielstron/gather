@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { after, before, test } from 'node:test';
-import { enrichPhotos, fetchImmichImage, ImmichError, requestLibraryScan } from '../src/lib/server/immich.js';
+import { enrichPhotos, fetchImmichImage, ImmichError, requestLibraryScan, searchCollection, collectionPeople } from '../src/lib/server/immich.js';
 import type { Photo } from '../src/lib/types.js';
 
 const LIBRARY = '11111111-1111-4111-8111-111111111111';
@@ -342,4 +342,111 @@ test('older Immich versions without full-size support keep serving a preview', a
     else res.writeHead(200,{'content-type':'image/jpeg'}).end('preview');
   };
   assert.equal(await (await fetchImmichImage('alice/summer.jpg','fullsize')).text(),'preview');
+});
+
+
+test('semantic search confines library and exact paths, preserves rank, and caches across gallery pages', async () => {
+  configure();
+  const other = photo('bob/another.jpg');
+  handler = (req, res, body) => {
+    assert.equal(req.url, '/api/search/smart');
+    assert.equal(body.query, 'friends by the sea');
+    assert.equal(body.language, 'en');
+    assert.deepEqual(body.filter.libraryId, { eq: LIBRARY });
+    assert.deepEqual(body.filter.originalPath.in, ['/external/shared photos/alice/summer.jpg', '/external/shared photos/bob/another.jpg']);
+    assert.deepEqual(body.filter.personIds.all, [ASSET]);
+    assert.equal(body.size, 1000);
+    json(res, [asset('/external/shared photos/bob/another.jpg', { id: '33333333-3333-4333-8333-333333333333' }), asset('/private/secret.jpg'), asset(undefined, { libraryId: 'another-library' }), asset()]);
+  };
+  const options = { mode: 'semantic' as const, language: 'en', filter: { personIds: { all: [ASSET] }, or: [{ city: { eq: 'Paris' } }, { country: { eq: 'France' } }] } };
+  const result = await searchCollection([photo(), other], 'friends by the sea', options);
+  assert.deepEqual(result.photos.map(photo => photo.id), [other.id, photo().id]);
+  assert.equal(result.truncated, false);
+  await searchCollection([photo(), other], 'friends by the sea', options);
+  assert.equal(requests.length, 1);
+});
+
+test('filters cannot widen a collection, original-path restrictions intersect, and metadata cursors are followed', async () => {
+  configure();
+  let page = 0;
+  handler = (req, res, body) => {
+    assert.equal(req.url, '/api/search/metadata');
+    assert.deepEqual(body.filter.originalPath, { in: ['/external/shared photos/alice/summer.jpg'], startsWith: '/external/' });
+    assert.deepEqual(body.filter.libraryId, { eq: LIBRARY });
+    page++;
+    if (page === 1) json(res, [], { nextCursor: 'next-page' });
+    else { assert.equal(body.cursor, 'next-page'); json(res, [asset()]); }
+  };
+  const result = await searchCollection([photo()], '', { mode: 'semantic', filter: { originalPath: { in: ['/private/no.jpg', '/external/shared photos/alice/summer.jpg'], startsWith: '/external/' } } });
+  assert.equal(result.photos.length, 1);
+  assert.equal(requests.length, 2);
+  const forbidden = await searchCollection([photo()], '', { mode: 'metadata', filter: { libraryId: { eq: ASSET } } });
+  assert.equal(forbidden.photos.length, 0);
+  assert.equal(requests.length, 2);
+});
+
+test('people and face coordinates are discovered only from shared assets, with sanitized responses', async () => {
+  configure();
+  handler = (req, res, body) => {
+    if (req.url === '/api/search/metadata') {
+      assert.equal(body.withPeople, true);
+      json(res, [asset(undefined, { people: [{ id: ASSET, name: 'Alice', thumbnailPath: '/private/portrait' }, { id: LIBRARY, name: 'Hidden person', isHidden: true }] }), asset('/private/other.jpg', { people: [{ id: LIBRARY, name: 'Private outsider' }] })]);
+    } else {
+      assert.equal(req.url, `/api/faces?id=${ASSET}`);
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify([{ imageWidth: 1600, imageHeight: 900, boundingBoxX1: 100, boundingBoxX2: 300, boundingBoxY1: 150, boundingBoxY2: 350, person: { id: ASSET, name: 'Alice', thumbnailPath: '/private/portrait' } }]));
+    }
+  };
+  const people = await collectionPeople([photo()]);
+  assert.equal(people.length, 1);
+  assert.equal(people[0].name, 'Alice');
+  assert.equal(people[0].photoId, photo().id);
+  assert.equal(people[0].face?.boundingBoxX1, 100);
+  assert(!JSON.stringify(people).includes('private'));
+  assert(!JSON.stringify(people).includes('Hidden'));
+  assert.equal(requests.length, 2);
+  await collectionPeople([photo()]);
+  assert.equal(requests.length, 2, 'both collection people and face coordinates are cached');
+});
+
+test('people filters work with a restricted key even if face crops are unavailable', async () => {
+  configure();
+  handler = (req, res) => req.url === '/api/search/metadata' ? json(res, [asset(undefined, { people: [{ id: ASSET, name: 'Alice' }] })]) : res.writeHead(403).end();
+  const people = await collectionPeople([photo()]);
+  assert.equal(people.length, 1);
+  assert.equal(people[0].face, undefined);
+});
+
+test('filename search remains local and unavailable semantic search never silently searches filenames', async () => {
+  configure();
+  const local = await searchCollection([photo()], 'SUMMER', { mode: 'filename' });
+  assert.equal(local.photos.length, 1);
+  assert.equal(requests.length, 0);
+  handler = (_req, res) => res.writeHead(503).end('upstream private detail');
+  await assert.rejects(searchCollection([photo()], 'summer', { mode: 'semantic' }), (error: any) => error.status === 503 && !error.message.includes('private'));
+  configure();
+  handler = (_req, res) => json(res, [asset()]);
+  await assert.rejects(searchCollection([photo()], '', { mode: 'semantic', queryAssetId: LIBRARY }), (error: any) => error.status === 400 && error.message.includes('shared collection'));
+  assert.equal(requests.length, 1, 'an external reference is rejected before any smart search');
+});
+
+
+test('an old search cannot replace cached assets after the Immich connection changes', async () => {
+  configure();
+  let finishOld!: () => void, started!: () => void;
+  const began = new Promise<void>(resolve => { started = resolve; });
+  handler = (_req, res) => { finishOld = () => json(res, [asset()]); started(); };
+  const oldSearch = searchCollection([photo()], 'an old scene', { mode: 'semantic' });
+  await began;
+  configure();
+  const current = '33333333-3333-4333-8333-333333333333';
+  handler = (req, res) => {
+    if (req.url === '/api/search/metadata') return json(res, [asset(undefined, { id: current })]);
+    assert.equal(req.url, `/api/assets/${current}/thumbnail?size=thumbnail`);
+    res.writeHead(200, { 'content-type': 'image/webp' }).end('current-image');
+  };
+  await enrichPhotos([photo()]);
+  finishOld();
+  await oldSearch;
+  assert.equal(await (await fetchImmichImage('alice/summer.jpg', 'thumbnail')).text(), 'current-image');
 });

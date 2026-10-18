@@ -20,6 +20,14 @@ People can change their displayed name later by clicking their name at the top. 
 
 Until you choose a collection, the default gallery is empty. Uploads and original downloads work before Immich is configured; preview cards explain that the host needs to connect Immich. There is no public demo login or default password.
 
+## Search
+
+The search bar uses Immich CLIP semantic search by default: describe a scene, place, or moment. Results stay ordered by relevance; the sort controls can reverse relevance or switch to filename/date order. With no query or filters, browsing still includes photos waiting for Immich indexing.
+
+Open **Filters & people** for a searchable face picker (all / any / exclude), all current Immich structured search fields and operators, and alternative condition groups. Filters cover dates, location, camera/lens, OCR, description, ratings, favorites, media type, visibility, file size, album/tag/person IDs, checksums, paths, and other indexing fields. More options include search language, similarity to another image in this collection, semantic result limit (up to Immich’s 1,000-result maximum), metadata ordering, and stacked photos. **Filename and contributor** mode retains local, case-insensitive filename search. **Description text** mode searches descriptions, and OCR is available as a condition.
+
+Structured search requires Immich 3.2+; semantic search also requires its smart-search model and indexed embeddings. Searches and face choices are confined to the selected shared root and library, verified again against current local files. Hidden people and people occurring only outside this collection are omitted. The browser receives no Immich credentials, global portrait paths, or raw search records. Transport pagination and response-expansion flags are handled by Gather; semantic search is capped at 1,000 results by Immich, with a notice to refine filters when that cap is reached. Metadata results follow all cursor pages within the collection limit. A short cache shares repeated searches; superseded browser requests are cancelled.
+
 ## Manage Gather in the browser
 
 Open `/admin` (or `/gather/admin` when using that prefix). The first administrator claims the installation using a private setup link and chooses a password of at least 12 characters. The setup token is created in `DATA_ROOT/admin-setup-token` when the admin page is first opened. A server operator reads that private file and supplies the link `https://your-origin/your-prefix/admin#setup=TOKEN` to the host. The token is never exposed by a public endpoint, is removed from the browser address bar, and is deleted after setup. Later visits use the administrator password. Admin sessions last 12 hours and are separate from guest sessions.
@@ -60,7 +68,7 @@ IMMICH_SCAN_API_KEY=your-admin-scan-api-key
 
 `IMMICH_URL` must be reachable **from Gather**. Docker services can share a network, or you can use a reachable HTTPS address. `localhost` inside Gather's container refers to that container, not Immich. A trailing `/api` is accepted.
 
-The preview key needs `asset.read` and `asset.view`. The optional separate scan key must belong to an Immich administrator and have `library.update`. When the scan key is empty, Gather attempts to use the preview key for scans. Both keys stay on the server and are never returned to the browser.
+The preview/search key needs `asset.read` and `asset.view`; add `face.read` for face crops in the people picker. People names and filtering also work without `face.read`. Gather discovers people only through assets in the shared collection, and crops faces from those photos rather than using global person portraits. The optional separate scan key must belong to an Immich administrator and have `library.update`. When the scan key is empty, Gather attempts to use the preview key for scans. Both keys stay on the server and are never returned to the browser.
 
 `IMMICH_PHOTO_ROOT` is the absolute path visible to **Immich**. `PHOTO_ROOT` is the path visible to **Gather**. They refer to the same host directory, but their container paths can differ:
 

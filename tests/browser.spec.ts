@@ -64,16 +64,28 @@ test.beforeAll(async () => {
         scans++; await indexFiles(); response.writeHead(204).end(); return;
       }
       if (key !== 'test-preview-key') { response.writeHead(401).end(); return; }
-      if (request.url === '/api/search/metadata') {
+      if (request.url === '/api/search/metadata' || request.url === '/api/search/smart') {
         const chunks: Buffer[] = [];
         for await (const chunk of request) chunks.push(chunk);
         const body = JSON.parse(Buffer.concat(chunks).toString());
-        const paths = body.filter?.originalPath?.in || [body.originalPath];
+        const paths = body.filter?.originalPath?.in || (body.originalPath ? [body.originalPath] : [...indexed.keys()]);
         const items = paths.filter((original: string) => indexed.has(original)).map((originalPath: string) => {
           const id = indexed.get(originalPath)!;
-          return { id, originalPath, libraryId, ...dimensions.get(id), thumbhash: 'ready' };
+          const name = originalPath.split('/').at(-1)!;
+          const person = name === 'weekend-0.jpg' ? { id: '11111111-1111-4111-8111-111111111111', name: 'Alice face' } : { id: '22222222-2222-4222-8222-222222222222', name: 'Bob face' };
+          return { id, originalPath, libraryId, ...dimensions.get(id), thumbhash: 'ready', people: [person], city: name === 'weekend-0.jpg' ? 'Paris' : 'Berlin' };
         });
-        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ assets: { items, nextCursor: null } })); return;
+        let matches = items.filter((item: any) => {
+          const filters = body.filter || {};
+          const personIds = item.people.map((person: any) => person.id);
+          return (!filters.personIds?.all || filters.personIds.all.every((id: string) => personIds.includes(id))) &&
+            (!filters.personIds?.any || filters.personIds.any.some((id: string) => personIds.includes(id))) &&
+            (!filters.personIds?.none || filters.personIds.none.every((id: string) => !personIds.includes(id))) &&
+            (!filters.city?.eq || item.city === filters.city.eq);
+        });
+        if (body.query?.includes('no-such-photo')) matches = [];
+        if (request.url === '/api/search/smart') matches = matches.reverse().slice(0, body.size);
+        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ assets: { items: matches, nextCursor: null } })); return;
       }
       const id = request.url?.match(/^\/api\/assets\/([^/]+)\/thumbnail\?size=(thumbnail|preview|fullsize)$/)?.[1];
       if (id && images.has(id)) {
@@ -132,7 +144,7 @@ test('shared link, editable names, private gallery, Immich scan, uploads and ori
   await expect.poll(() => page.locator('.photo-open img').evaluateAll(images => images.map(image => image.getAttribute('alt')))).toEqual(['weekend-2.jpg', 'weekend-1.jpg', 'weekend-0.jpg']);
 
   await expect(page.locator('.timeline-date')).toHaveCount(0);
-  await page.getByLabel('Sort photos').selectOption('newest');
+  await page.getByLabel('Sort photos').selectOption('relevance');
   await expect(page.locator('.timeline-group')).toHaveCount(2);
   await expect(page.locator('.photo-open img').first()).toHaveAttribute('alt', 'weekend-1.jpg');
   await page.getByRole('button', { name: 'Sort ascending', exact: true }).click();
@@ -454,13 +466,14 @@ test('search remains responsive while image connections are stalled', async ({ p
   let release!: () => void;
   thumbnailGate = new Promise<void>(resolve => { release = resolve; });
   peakHeldThumbnails = 0;
+  await page.setViewportSize({ width: 1280, height: 1200 });
   try {
     await page.goto(`${origin}${basePath}/#invite=${invitation.token}`, {waitUntil:'domcontentloaded'});
     await expect(page.locator('.photo-tile').first()).toBeVisible();
     await expect.poll(() => heldThumbnails).toBe(2);
     const started = Date.now();
     const response = page.waitForResponse(r => r.url().includes('/api/photos?') && r.url().includes('q=no-such-photo'));
-    await page.getByLabel('Search filenames').fill('no-such-photo');
+    await page.getByLabel('Search photos').fill('no-such-photo');
     expect((await response).status()).toBe(200);
     expect(Date.now() - started).toBeLessThan(2500);
     expect(peakHeldThumbnails).toBeLessThanOrEqual(2);
@@ -483,10 +496,12 @@ test('new searches abort previous searches instead of leaving them queued', asyn
     started(); await gate; await route.abort().catch(() => {});
   });
   try {
-    await page.getByLabel('Search filenames').fill('old-search');
+    await page.getByLabel('Search photos').fill('old-search');
     await requested;
-    await page.getByLabel('Search filenames').fill('weekend');
-    await expect(page.locator('.photo-tile')).toHaveCount(3);
+    const latestReply = page.waitForResponse(response => response.url().includes('/api/photos?') && new URL(response.url()).searchParams.get('q') === 'weekend');
+    await page.getByLabel('Search photos').fill('weekend');
+    const latest = await (await latestReply).json();
+    await expect(page.locator('.photo-tile')).toHaveCount(latest.photos.length);
     await expect.poll(() => aborted).toBe(true);
     await expect(page.getByRole('alert')).toHaveCount(0);
   } finally { release(); await page.unrouteAll({ behavior: 'wait' }); }
@@ -650,4 +665,66 @@ test('duplicate checks retry before sending any file and can be cancelled', asyn
     await expect(page.locator('.upload-panel')).toContainText('Cancelled');
   } finally { release(); await page.unrouteAll({ behavior: 'wait' }); }
   expect(transfers).toBe(0);
+});
+
+
+test('search defaults to semantic relevance, combines people and conditions, and keeps filename search available', async ({ page, request }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invitation = auth.createMember('Semantic search', 'semantic-search');
+  const smartRequests: Record<string, any>[] = [];
+  // Observe the private Gather request; upstream credentials never reach the browser.
+  page.on('request', request => {
+    if (request.url().includes('/api/photos?') && new URL(request.url()).searchParams.get('q')) {
+      const params = new URL(request.url()).searchParams;
+      smartRequests.push({ mode: JSON.parse(params.get('search') || '{}').mode, sort: params.get('sort') });
+    }
+  });
+  expect((await request.get(`${origin}${basePath}/api/search/people`)).status()).toBe(401);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
+  await expect(page.locator('.photo-tile').first()).toBeVisible();
+  const initial = await (await page.request.get(`${origin}${basePath}/api/photos?limit=300`)).json();
+  await page.getByLabel('Search photos', { exact: true }).fill('friends on a road trip');
+  await expect.poll(() => smartRequests.length).toBeGreaterThan(0);
+  await expect(page.locator('.timeline-date')).toHaveCount(0);
+  expect(smartRequests.at(-1)).toEqual({ mode: 'semantic', sort: 'relevance' });
+  const ranked = await (await page.request.get(`${origin}${basePath}/api/photos?q=friends+on+a+road+trip&sort=relevance&limit=300`)).json();
+  await expect(page.locator('.photo-tile')).toHaveCount(ranked.photos.length);
+  await expect.poll(() => page.locator('.photo-open img').evaluateAll(images => images.map(image => image.getAttribute('alt')))).toEqual(ranked.photos.map((photo: any) => photo.name));
+  await page.getByRole('button', { name: 'Filters & people' }).click();
+  await page.getByRole('button', { name: 'Alice face (1 photos)', exact: true }).click();
+  await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
+  await expect(page.locator('.photo-tile')).toHaveCount(1);
+  await expect(page.locator('.photo-open img')).toHaveAttribute('alt', 'weekend-0.jpg');
+  await page.getByRole('button', { name: 'Filters & people' }).click();
+  await page.getByLabel('People match', { exact: true }).selectOption('none');
+  await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
+  await expect(page.locator('.photo-tile')).toHaveCount(ranked.photos.length - 1);
+  await page.getByRole('button', { name: 'Filters & people' }).click();
+  await page.getByRole('button', { name: 'Clear people', exact: true }).click();
+  await page.getByRole('button', { name: '+ Add condition', exact: true }).click();
+  await page.getByLabel('Filter field', { exact: true }).selectOption('city');
+  await page.getByLabel('Filter value', { exact: true }).fill('Paris');
+  await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
+  await expect(page.locator('.photo-tile')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Filters & people' }).click();
+  await page.getByRole('button', { name: 'Remove condition', exact: true }).click();
+  await page.getByLabel('Search mode', { exact: true }).selectOption('filename');
+  await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
+  await page.getByLabel('Search photos', { exact: true }).fill('WEEKEND-0');
+  await expect(page.locator('.photo-tile')).toHaveCount(1);
+  await expect(page.locator('.photo-open img')).toHaveAttribute('alt', 'weekend-0.jpg');
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
+  await page.getByRole('button', { name: 'Filters & people' }).click();
+  await page.getByRole('button', { name: '+ Add condition', exact: true }).click();
+  await page.getByLabel('Filter field', { exact: true }).selectOption('personIds');
+  await page.getByLabel('Filter value', { exact: true }).fill(Array(190).fill('11111111-1111-4111-8111-111111111111').join(','));
+  const largeSearch = page.waitForResponse(response => new URL(response.url()).pathname === `${basePath}/api/photos` && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
+  expect((await largeSearch).status()).toBe(200);
+  await expect(page.locator('.photo-tile')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
+  await page.getByLabel('Search photos', { exact: true }).fill('no-such-photo');
+  await expect(page.getByRole('heading', { name: 'No matching photos' })).toBeVisible();
 });

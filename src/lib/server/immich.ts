@@ -1,5 +1,5 @@
 import { readSettings } from './settings';
-import { createLimiter } from '../async';
+import { createLimiter, mapConcurrent } from '../async';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { Photo } from '../types.js';
@@ -75,7 +75,7 @@ function remember(key: string, asset: Asset | null, pendingUntil?: number): void
 
 async function request(config: Config, endpoint: string, init: RequestInit = {}, signal?: AbortSignal): Promise<Response> {
   const fullSize = endpoint.startsWith('/assets/') && (endpoint.endsWith('/original') || endpoint.includes('size=fullsize'));
-  const timeout = AbortSignal.timeout(init.method === 'POST' ? 8_000 : fullSize ? 90_000 : 20_000);
+  const timeout = AbortSignal.timeout(endpoint === '/search/smart' ? 25_000 : init.method === 'POST' ? 8_000 : fullSize ? 90_000 : 20_000);
   try {
     return await fetch(`${config.url}/api${endpoint}`, {
       ...init,
@@ -336,4 +336,163 @@ export async function requestLibraryScan(): Promise<LibraryScanResult> {
     return { state: 'scheduled', message: 'A scan is scheduled shortly to include the latest uploads.' };
   }
   return performScan(config, key);
+}
+
+// Search credentials and raw Immich records never leave the server. Every accepted
+// result must match both the configured library and a currently shared file.
+const collectionSearchCache = new Map<string, { expires: number; items: Record<string, unknown>[]; truncated: boolean }>();
+const collectionSearchPending = new Map<string, Promise<{ items: Record<string, unknown>[]; truncated: boolean }>>();
+
+async function searchSharedAssets(photos: Photo[], options: import('../search').CollectionSearch, query: string, people: boolean, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  const config = configuration();
+  if (!config) throw new ImmichError(503, 'Connect Immich in collection settings to use semantic search and filters.');
+  if (!photos.length) return { items: [], truncated: false };
+  const requested = new Set(photos.map(photo => originalPath(config, decodePhotoId(photo.id))));
+  const filter = structuredClone(options.filter || {}) as Record<string, any>;
+  if (filter.libraryId?.eq !== undefined && filter.libraryId.eq !== config.library || filter.libraryId?.ne === config.library) return { items: [], truncated: false };
+  filter.libraryId = { eq: config.library };
+  const paths = filter.originalPath?.in ? [...requested].filter(original => filter.originalPath.in.includes(original)) : [...requested];
+  if (!paths.length) return { items: [], truncated: false };
+  filter.originalPath = { ...filter.originalPath, in: paths };
+  if (query && options.mode === 'metadata') {
+    if (filter.description?.like !== undefined) throw new ImmichError(400, 'Use either a description search or a description pattern condition.');
+    filter.description = { ...filter.description, like: `%${query}%` };
+  }
+  const semantic = !people && options.mode === 'semantic' && !!(query || options.queryAssetId);
+  const body: Record<string, unknown> = { filter, size: semantic ? options.resultLimit || 1000 : 1000, withExif: true,
+    ...(semantic ? { ...(query ? { query } : {}), ...(options.queryAssetId ? { queryAssetId: options.queryAssetId } : {}), ...(options.language ? { language: options.language } : {}) }
+      : { withPeople: people, withStacked: people ? true : options.withStacked ?? true, ...(options.orderBy ? { orderBy: options.orderBy } : {}) }) };
+  // Similarity references must themselves belong to the shared folder.
+  if (semantic && options.queryAssetId) {
+    const indexed = await resolveAssets(config, [...requested]);
+    if (![...indexed.values()].some(asset => asset?.id === options.queryAssetId)) throw new ImmichError(400, 'The reference image must belong to this shared collection.');
+  }
+  const key = createHash('sha256').update(JSON.stringify([config.signature, body, photos.map(photo => [photo.id, photo.revision])])).digest('hex');
+  const known = collectionSearchCache.get(key);
+  if (known && known.expires > Date.now()) return known;
+  let work = collectionSearchPending.get(key);
+  if (!work) {
+    work = (async () => {
+      const searchSignal = AbortSignal.timeout(25_000);
+      const items: Record<string, unknown>[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 25; page++) {
+        const response = await metadataRequests(() => request(config, semantic ? '/search/smart' : '/search/metadata', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, ...(cursor ? { cursor } : {}) })
+        }, searchSignal));
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw new ImmichError(response.status === 400 ? 400 : 503, response.status === 400
+            ? 'Immich could not run this search. Check the filters and that smart search is enabled. Structured filters require Immich 3.2 or newer.'
+            : 'Immich search is temporarily unavailable. Please try again.');
+        }
+        const result = await response.json() as SearchPage;
+        if (!Array.isArray(result?.assets?.items)) throw new ImmichError(503, 'Immich returned an invalid search response.');
+        for (const value of result.assets.items) {
+          const match = matchedAsset(value, config, requested);
+          if (!match) continue;
+          if (config.signature === signature) remember(match.original, match.asset);
+          // Retain only what this feature needs, rather than whole EXIF/owner records.
+          items.push({ id: match.asset.id, originalPath: match.original, ...(people ? { people: (value as Record<string, unknown>).people } : {}) });
+        }
+        if (semantic || !result.assets.nextCursor) {
+          const value = { items, truncated: semantic && result.assets.items.length >= Number(body.size) };
+          collectionSearchCache.set(key, { ...value, expires: Date.now() + (people ? 60_000 : 15_000) });
+          while (collectionSearchCache.size > 24) collectionSearchCache.delete(collectionSearchCache.keys().next().value!);
+          return value;
+        }
+        if (cursor === result.assets.nextCursor) break;
+        cursor = result.assets.nextCursor;
+      }
+      throw new ImmichError(503, 'This search returned too many pages. Please narrow the filters.');
+    })().catch(error => {
+      if (error instanceof ImmichError && error.status === 400) throw error;
+      throw new ImmichError(503, 'Immich search is taking too long or is temporarily unavailable. Please try again.');
+    }).finally(() => collectionSearchPending.delete(key));
+    collectionSearchPending.set(key, work);
+  }
+  if (!signal) return work;
+  signal.throwIfAborted();
+  // Searches are shared across gallery pages; cancelling one waiter must not cancel others.
+  return new Promise<Awaited<typeof work>>((resolve, reject) => {
+    const abort = () => reject(new ImmichError(499, 'Search cancelled.'));
+    signal.addEventListener('abort', abort, { once: true });
+    work!.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+}
+
+export async function searchCollection(photos: Photo[], query: string, options: import('../search').CollectionSearch, signal?: AbortSignal): Promise<{ photos: Photo[]; truncated: boolean }> {
+  const local = options.mode === 'filename' && query
+    ? photos.filter(photo => `${photo.name} ${photo.owner}`.toLowerCase().includes(query.toLowerCase())) : photos;
+  if (!Object.keys(options.filter || {}).length && !options.queryAssetId && (!query || options.mode === 'filename') && !options.orderBy && options.withStacked === undefined) return { photos: local, truncated: false };
+  const result = await searchSharedAssets(local, options, options.mode === 'filename' ? '' : query, false, signal);
+  const config = configuration()!;
+  const byPath = new Map(local.map(photo => [originalPath(config, decodePhotoId(photo.id)), photo]));
+  const seen = new Set<string>();
+  return { photos: result.items.flatMap(item => {
+    const photo = byPath.get(item.originalPath as string);
+    if (!photo || seen.has(photo.id)) return [];
+    seen.add(photo.id);
+    return [photo];
+  }), truncated: result.truncated };
+}
+
+const faceCache = new Map<string, { expires: number; faces: Record<string, any>[] }>();
+
+export async function collectionPeople(photos: Photo[], signal?: AbortSignal): Promise<import('../search').SearchPerson[]> {
+  const result = await searchSharedAssets(photos, { mode: 'metadata' }, '', true, signal);
+  const config = configuration()!;
+  const byPath = new Map(photos.map(photo => [originalPath(config, decodePhotoId(photo.id)), photo]));
+  const people = new Map<string, import('../search').SearchPerson>();
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  for (const item of result.items) {
+    const photo = byPath.get(item.originalPath as string)!;
+    if (!Array.isArray(item.people)) continue;
+    for (const person of item.people) {
+      if (!person || typeof person.id !== 'string' || !uuid.test(person.id) || person.isHidden) continue;
+      const current = people.get(person.id);
+      if (current) { current.count++; continue; }
+      const face = Array.isArray(person.faces) ? person.faces[0] : undefined;
+      const faceKeys = ['imageWidth', 'imageHeight', 'boundingBoxX1', 'boundingBoxY1', 'boundingBoxX2', 'boundingBoxY2'];
+      const safeFace = face && faceKeys.every(key => Number.isFinite(face[key])) && face.imageWidth > 0 && face.imageHeight > 0 && face.boundingBoxX2 > face.boundingBoxX1 && face.boundingBoxY2 > face.boundingBoxY1
+        ? Object.fromEntries(faceKeys.map(key => [key, face[key]])) as import('../search').SearchPerson['face'] : undefined;
+      people.set(person.id, { id: person.id, name: typeof person.name === 'string' ? person.name.slice(0, 200) : '', photoId: photo.id, revision: photo.revision, count: 1, ...(safeFace ? { face: safeFace } : {}) });
+    }
+  }
+  // Crop only faces from a shared original, never a person's global portrait.
+  // Older/limited keys can still filter people by name without face.read.
+  const representatives = new Map<string, string>();
+  for (const person of people.values()) {
+    if (person.face) continue;
+    const original = originalPath(config, decodePhotoId(person.photoId));
+    const asset = result.items.find(item => item.originalPath === original);
+    if (asset) representatives.set(person.photoId, asset.id as string);
+  }
+  let denied = false;
+  await mapConcurrent([...representatives], 4, async ([photoId, assetId]) => {
+    if (denied) return;
+    const key = `${config.signature}:${assetId}`;
+    let faces = faceCache.get(key);
+    try {
+      if (!faces || faces.expires <= Date.now()) {
+        const response = await metadataRequests(() => request(config, `/faces?id=${encodeURIComponent(assetId)}`, {}, signal));
+        if (!response.ok) { await response.body?.cancel(); if (response.status === 403) denied = true; return; }
+        const data = await response.json();
+        if (!Array.isArray(data)) return;
+        faces = { expires: Date.now() + 300_000, faces: data };
+        faceCache.set(key, faces);
+        while (faceCache.size > CACHE_LIMIT) faceCache.delete(faceCache.keys().next().value!);
+      }
+      for (const face of faces.faces) {
+        const person = people.get(face.person?.id);
+        if (!person || person.photoId !== photoId) continue;
+        const keys = ['imageWidth', 'imageHeight', 'boundingBoxX1', 'boundingBoxY1', 'boundingBoxX2', 'boundingBoxY2'];
+        if (keys.every(key => Number.isFinite(face[key])) && face.imageWidth > 0 && face.imageHeight > 0 && face.boundingBoxX2 > face.boundingBoxX1 && face.boundingBoxY2 > face.boundingBoxY1) {
+          person.face = Object.fromEntries(keys.map(key => [key, face[key]])) as import('../search').SearchPerson['face'];
+        }
+      }
+    } catch { /* Names and filters remain useful if face crops are unavailable. */ }
+  });
+  return [...people.values()].sort((a, b) => Number(!!b.name) - Number(!!a.name) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
 }

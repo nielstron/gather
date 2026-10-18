@@ -8,6 +8,8 @@
   import justifiedLayout from 'justified-layout';
   import PhotoSwipe from 'photoswipe';
   import { installProgressiveImages } from '$lib/progressive-viewer';
+  import SearchFilters from '$lib/components/SearchFilters.svelte';
+  import type { CollectionSearch } from '$lib/search';
   import Thumbnail from '$lib/components/Thumbnail.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import type { Member, Photo, PhotoList } from '$lib/types';
@@ -22,7 +24,11 @@
   let error = '';
   let folder = '';
   let query = '';
-  let sort = 'newest';
+  let searchOptions: CollectionSearch = { mode: 'semantic' };
+  let searchTruncated = false;
+  let searchOrder = false;
+  let searchFilters: SearchFilters;
+  let sort = 'relevance';
   let sortDirection = 'desc';
   let selected = new Set<string>();
   let imageErrors = new Set<string>();
@@ -62,9 +68,11 @@
   $: collectionLabel = !folder ? 'All photos' : `${currentOwner?.name || folder}${currentOwner?.id === data.user?.id ? ' (you)' : ''}`;
   $: allSelected = photos.length > 0 && photos.slice(0, 200).every((photo) => selected.has(photo.id));
   $: selectionAction = allSelected ? 'Deselect all' : photos.length > 200 ? 'Select first 200' : 'Select all';
-  $: sortedPhotos = sortPhotos(photos, sort, sortDirection);
+  $: hasSearch = !!query.trim() || !!Object.keys(searchOptions.filter || {}).length || !!searchOptions.queryAssetId;
+  $: semanticQuery = searchOptions.mode === 'semantic' && !!(query.trim() || searchOptions.queryAssetId);
+  $: sortedPhotos = searchOrder ? photos : sortPhotos(photos, sort, sortDirection);
   $: photoIndexes = new Map(sortedPhotos.map((photo, index) => [photo.id, index]));
-  $: timelineGroups = groupTimeline(sortedPhotos, galleryWidth, sort);
+  $: timelineGroups = groupTimeline(sortedPhotos, galleryWidth, searchOrder ? 'name' : sort);
   $: completedUploads = uploads.filter((upload) => upload.status === 'done').length;
   $: activeUploads = uploads.filter((upload) => upload.status === 'waiting' || upload.status === 'checking' || upload.status === 'uploading' || upload.status === 'retrying').length;
   $: totalFolderPhotos = folders.reduce((sum, entry) => sum + entry.count, 0);
@@ -110,7 +118,11 @@
     const request = ++fetchNumber;
     const requestedFolder = folder;
     const requestedQuery = query.trim();
-    const requestedSort = sort;
+    const requestedSort = sort === 'relevance' ? ((searchOptions.mode === 'semantic' && !!(requestedQuery || searchOptions.queryAssetId)) || searchOptions.orderBy ? 'relevance' : 'date') : sort;
+    const effectiveOptions = { ...searchOptions };
+    if (sort !== 'relevance') delete effectiveOptions.orderBy;
+    else if (effectiveOptions.orderBy) effectiveOptions.orderBy = { ...effectiveOptions.orderBy, direction: sortDirection as 'asc' | 'desc' };
+    const requestedOptions = JSON.stringify(effectiveOptions);
     const requestedDirection = sortDirection;
     const existingPhotos = photos;
     const targetCount = append ? 150 : Math.max(150, existingPhotos.length);
@@ -124,9 +136,12 @@
     try {
       const offsets = Array.from({ length: Math.ceil(targetCount / 300) }, (_, index) => index * 300);
       const pages = await mapConcurrent(offsets, 4, async offset => {
-        const params = new URLSearchParams({ q: requestedQuery, offset: String(baseOffset + offset), limit: String(Math.min(300, targetCount - offset)), sort: requestedSort === 'name' ? 'name' : 'date', direction: requestedDirection });
+        const params = new URLSearchParams({ q: requestedQuery, offset: String(baseOffset + offset), limit: String(Math.min(300, targetCount - offset)), sort: requestedSort === 'relevance' ? 'relevance' : requestedSort === 'name' ? 'name' : 'date', direction: requestedDirection, search: requestedOptions });
         if (requestedFolder) params.set('folder', requestedFolder);
-        const response = await fetch(`${base}/api/photos?${params}`, { signal: controller.signal });
+        // Large ID/condition lists exceed common proxy URL limits; keep them in a bounded body.
+        const response = params.toString().length > 6000
+          ? await fetch(`${base}/api/photos`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.fromEntries(params)), signal: controller.signal })
+          : await fetch(`${base}/api/photos?${params}`, { signal: controller.signal });
         const body = await response.json();
         if (response.status === 401) { location.reload(); throw new Error('Your session has expired.'); }
         if (!response.ok) throw new Error(body.error || 'Your photos could not be loaded. Please try again.');
@@ -140,6 +155,8 @@
       folders = result.folders;
       total = result.total;
       hasMore = result.hasMore;
+      searchTruncated = !!result.searchTruncated;
+      searchOrder = requestedSort === 'relevance';
       previewService = result.previewService;
       imageErrors = new Set();
     } catch (cause) {
@@ -512,7 +529,7 @@
         <p class="nav-label">LIBRARY</p>
         <button class:active={!folder} class="nav-item" on:click={() => navigate('')}><Icon name="image" /><span>All photos</span><span class="nav-count">{totalFolderPhotos || ''}</span></button>
         <button class:active={folder === data.user.folder} class="nav-item" on:click={() => navigate(data.user!.folder)}><Icon name="upload" /><span>My uploads</span></button>
-        <div class="contributors-heading"><p class="nav-label">PEOPLE</p><span>{data.members.length}</span></div>
+        <div class="contributors-heading"><p class="nav-label">CONTRIBUTORS</p><span>{data.members.length}</span></div>
         {#each data.members as member, index}
           <button class:active={folder === member.folder} class="nav-item person-nav" on:click={() => navigate(member.folder)}>
             <span class="person-avatar tone-{index % 5}">{member.name.slice(0, 1).toUpperCase()}</span><span>{member.name}{member.id === data.user.id ? ' (you)' : ''}</span><span class="nav-count">{folders.find((entry) => entry.folder === member.folder)?.count || ''}</span>
@@ -527,7 +544,7 @@
       <header class="topbar">
         <button class="identity-button mobile-identity" on:click={openProfile} aria-label={`Change name for ${data.user.name}`} aria-haspopup="dialog" title={`Change name: ${data.user.name}`}><span class="identity-icon"><Icon name="user" size={22} /></span><span class="identity-name">{data.user.name}</span></button>
         <div class="breadcrumb"><Icon name="folder" size={16} /><span>{data.collectionName}</span><Icon name="chevron" size={13} /><strong>{pageTitle}</strong></div>
-        <label class="search-input"><Icon name="search" size={18} /><input type="search" aria-label="Search filenames" placeholder="Search photos…" bind:value={query} on:input={search} /><span class="search-hint">by filename</span></label>
+        <label class="search-input"><Icon name="search" size={18} /><input type="search" aria-label="Search photos" placeholder="Describe a scene, place, or moment…" bind:value={query} on:input={search} /><span class="search-hint">{searchOptions.mode === 'semantic' ? 'by meaning' : searchOptions.mode === 'filename' ? 'by filename' : 'descriptions'}</span></label>
         <Button class="primary-button top-upload" onclick={() => input.click()}><Icon name="upload" size={17} /><span>Upload photos</span></Button>
       </header>
       <section class="gallery-section" aria-label="Photo collection" style:padding-bottom={uploads.length ? `${uploadPanelHeight + 48}px` : undefined}>
@@ -543,12 +560,14 @@
             </div>
             <div class="collection-actions">
               {#if photos.length}<button class="icon-button select-all" class:active={allSelected} on:click={() => { selected = allSelected ? new Set() : new Set(photos.slice(0, 200).map((photo) => photo.id)); }} aria-label={selectionAction} title={selectionAction} aria-pressed={allSelected}><Icon name="select-all" size={20} /></button>{/if}
-              <label class="icon-button sort-control" title={`Sort by: ${sort === 'name' ? 'Filename' : 'Date added'}`}><span class="sr-only">Sort photos</span><Icon name="sort" size={20} /><select value={sort} on:change={(event) => { sort = event.currentTarget.value; sortDirection = sort === 'name' ? 'asc' : 'desc'; changeSort(); }}><option value="newest">Date added</option><option value="name">Filename</option></select></label>
+              <label class="icon-button sort-control" title={`Sort by: ${sort === 'name' ? 'Filename' : semanticQuery ? 'Relevance' : 'Date added'}`}><span class="sr-only">Sort photos</span><Icon name="sort" size={20} /><select value={sort} on:change={(event) => { sort = event.currentTarget.value; sortDirection = sort === 'name' ? 'asc' : 'desc'; changeSort(); }}><option value="relevance">{searchOptions.orderBy ? 'Search order' : semanticQuery ? 'Relevance' : 'Date added'}</option>{#if semanticQuery || searchOptions.orderBy}<option value="newest">Date added</option>{/if}<option value="name">Filename</option></select></label>
               <button class="icon-button" on:click={() => { sortDirection = sortDirection === 'asc' ? 'desc' : 'asc'; changeSort(); }} aria-label={sortDirection === 'asc' ? 'Sort descending' : 'Sort ascending'} title={sortDirection === 'asc' ? 'Ascending — switch to descending' : 'Descending — switch to ascending'}><Icon name={sortDirection === 'asc' ? 'sort-ascending' : 'sort-descending'} size={20} /></button>
               <button class="icon-button" on:click={() => loadPhotos()} disabled={loading} aria-label="Refresh photos" title="Refresh photos">{#if loading}<span class="small-spinner" aria-hidden="true"></span>{:else}<Icon name="refresh" size={18} />{/if}</button>
             </div>
           </div>
         </div>
+        <SearchFilters {query} bind:this={searchFilters} bind:value={searchOptions} on:apply={(event) => { searchOptions = event.detail; selected = new Set(); photos = []; sort = 'relevance'; sortDirection = searchOptions.orderBy?.direction || 'desc'; void loadPhotos(); }} />
+        {#if searchTruncated}<p class="search-limit-notice">Showing the best {total} semantic matches. Add filters to narrow the results.</p>{/if}
         {#if previewService !== 'ready'}<div class="service-notice"><Icon name="info" size={19} /><div><strong>{previewService === 'unconfigured' ? 'Connect Immich to bring your gallery to life' : 'Immich previews are temporarily unavailable'}</strong><p>{previewService === 'unconfigured' ? 'Your host needs to connect an Immich external library. You can already upload photos and download originals.' : 'Your photos are safely stored. You can keep uploading and downloading originals while Immich reconnects.'}</p></div><button class="text-button" on:click={() => loadPhotos()}>Refresh</button></div>{/if}
         {#if error}<div class="error-notice" role="alert"><Icon name="info" size={18} /><span>{error}</span><button class="text-button" on:click={() => loadPhotos()}>Try again</button></div>{/if}
         {#if selected.size}<div class="selection-bar"><button class="icon-button" on:click={() => { selected = new Set(); }} aria-label="Clear selection"><Icon name="close" size={18} /></button><strong>{selected.size} selected</strong><form method="POST" action={`${base}/api/download`}><input type="hidden" name="ids" value={JSON.stringify([...selected])} /><Button type="submit" class="primary-button"><Icon name="download" size={17} />Download originals</Button></form></div>{/if}
@@ -571,7 +590,7 @@
             </div>
           </section>
           {/each}
-          {#if !photos.length && !loading}<div class="empty-state"><div class="empty-illustration"><span class="empty-photo"><Icon name="image" size={39} /></span><span class="empty-plus">+</span></div><Badge size="small" color="secondary">{query ? 'Nothing here yet' : 'Room for every moment'}</Badge><h2>{query ? 'No matching photos' : folder && folder !== data.user.folder ? 'Their story starts here' : 'The best memories are shared'}</h2><p>{query ? 'Try another filename, or explore a different folder.' : folder && folder !== data.user.folder ? `${currentOwner?.name || 'This person'} hasn’t shared any photos yet. Check back soon.` : 'Add your first photos and give everyone a new perspective. Your originals stay right here, on your server.'}</p>{#if query}<Button class="primary-button" onclick={() => { query = ''; void loadPhotos(); }}>Clear search</Button>{:else}<Button class="primary-button" onclick={() => input.click()}><Icon name="upload" size={18} />Upload your photos</Button><span class="empty-drop-hint">or drop them anywhere on this page</span>{/if}</div>{:else if !photos.length && loading}<div class="loading-state"><span class="large-spinner"></span><p>Gathering your photos…</p></div>{/if}
+          {#if !photos.length && !loading}<div class="empty-state"><div class="empty-illustration"><span class="empty-photo"><Icon name="image" size={39} /></span><span class="empty-plus">+</span></div><Badge size="small" color="secondary">{hasSearch ? 'Nothing here yet' : 'Room for every moment'}</Badge><h2>{hasSearch ? 'No matching photos' : folder && folder !== data.user.folder ? 'Their story starts here' : 'The best memories are shared'}</h2><p>{hasSearch ? 'Try another description, adjust the filters, or explore a different folder.' : folder && folder !== data.user.folder ? `${currentOwner?.name || 'This person'} hasn’t shared any photos yet. Check back soon.` : 'Add your first photos and give everyone a new perspective. Your originals stay right here, on your server.'}</p>{#if hasSearch}<Button class="primary-button" onclick={() => { query = ''; searchFilters.reset(); }}>Clear search</Button>{:else}<Button class="primary-button" onclick={() => input.click()}><Icon name="upload" size={18} />Upload your photos</Button><span class="empty-drop-hint">or drop them anywhere on this page</span>{/if}</div>{:else if !photos.length && loading}<div class="loading-state"><span class="large-spinner"></span><p>Gathering your photos…</p></div>{/if}
         </div>
         {#if hasMore}<div class="load-more"><Button variant="outline" onclick={() => loadPhotos(true)} loading={loading}>Load more photos</Button><span>Showing {photos.length} of {total}</span></div>{/if}
       </section>
