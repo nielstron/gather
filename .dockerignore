@@ -7,3 +7,8 @@ var
 .git
 test-results
 playwright-report
+
+# Local deployment overrides may contain host paths or credentials.
+compose.override.yaml
+compose.override.yml
+docker-compose.override.yml

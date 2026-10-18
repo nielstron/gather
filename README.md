@@ -17,14 +17,14 @@ Everyone adds their photos to one collection and downloads the photos they want.
 | --- | --- |
 | ![Choose contributors and download only updates](docs/screenshots/download.jpg) | ![Configure a collection through the admin interface](docs/screenshots/admin.jpg) |
 
-Screenshots use a demo collection with [public-domain photography](docs/screenshots/README.md).
+[Try the read-only demo](https://misc.niels.bond/gather-demo/). Screenshots use a demo collection with [public-domain photography](docs/screenshots/README.md).
 
 ## Get started
 
 Requires Docker Compose and a directory containing the photos you want to share. Connect an existing Immich instance for thumbnails, face filters, and semantic search.
 
 ```bash
-git clone git@github.com:nielstron/gather.git
+git clone https://github.com/nielstron/gather.git
 cd gather
 cp .env.example .env
 ```
@@ -65,3 +65,7 @@ npm run dev
 ```
 
 Run `npm run check`, `npm test`, and `npm run test:e2e` before contributing. Browser tests use isolated fixtures and a mock Immich server. This is an early project intended for one Node process and small groups.
+
+## License
+
+Gather is [MIT licensed](LICENSE). The Immich source and API patches retain their upstream [AGPL-3.0 license](integrations/immich/LICENSE). Screenshot and demo photo credits are [listed separately](docs/screenshots/README.md).

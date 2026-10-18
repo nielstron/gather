@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, rmdirSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { collectionDataRoot } from './settings';
+import { readSettings, collectionDataRoot } from './settings';
 import { config } from './config';
 import type { Member, Photo } from '../types';
 
@@ -294,6 +294,7 @@ export function joinCollection(token: string, name: string): { member: Member; s
       for (let attempt = 0; attempt < 10; attempt++) {
         const candidate = attempt === 0 ? slug : `${slug}-${randomUUID().slice(0, 8)}`;
         if (claimed.has(nameKey(candidate))) continue;
+        if (readSettings().readOnly) { folder = candidate; break; }
         try { mkdirSync(path.join(config.photoRoot, candidate), { mode: 0o750 }); folder = candidate; created = true; break; }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
       }

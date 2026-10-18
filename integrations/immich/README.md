@@ -49,4 +49,4 @@ Tests execute the compiled code against the actual upstream runtime dependencies
 
 `scan-path.patch` contains the source changes for review or applying to a full Immich checkout. `openapi.patch` adds the operation and DTO to that release's API specification; `scan-path.openapi.json` is the standalone contract fragment (merge with Immich's security schemes). The small overlay compiler does not run Nest's Swagger build plugin; the explicit specification patch supplies the new operation's generated-documentation contract.
 
-The modified Immich source remains under Immich's GNU AGPL v3 license; see the [upstream license](https://github.com/immich-app/immich/blob/v3.2.2/LICENSE).
+The Immich source/API changes in `scan-path.patch`, `openapi.patch`, and `scan-path.openapi.json` remain under Immich's [GNU AGPL v3 license](LICENSE); see the [upstream license](https://github.com/immich-app/immich/blob/v3.2.2/LICENSE).

@@ -288,6 +288,13 @@ test('administrator configures a collection and invitations through the UI', asy
   await expect(page.getByRole('status')).toHaveText('Settings saved.');
   const saved = await (await page.request.get(`${origin}${basePath}/api/admin/config`)).json();
   expect(saved.settings.collectionName).toBe('A trip to remember');
+  await page.getByRole('checkbox', { name: /^Read-only collection:/ }).check();
+  await page.getByRole('button', { name: 'Save settings', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('Settings saved.');
+  expect((await (await page.request.get(`${origin}${basePath}/api/admin/config`)).json()).settings.readOnly).toBe(true);
+  await page.getByRole('checkbox', { name: /^Read-only collection:/ }).uncheck();
+  await page.getByRole('button', { name: 'Save settings', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('Settings saved.');
   expect(saved.settings.immichApiKey).toBeUndefined();
   expect(saved.settings.immichScanApiKey).toBeUndefined();
   await page.getByRole('button', { name: 'Choose a different folder' }).click();
@@ -1240,4 +1247,33 @@ test('one admin creates and switches collections while guest access, files, and 
     expect(cookies.some(cookie => cookie.name.startsWith('gather_session_'))).toBe(false);
     expect((await request.get(`${secondApi}/admin/config`)).status()).toBe(401);
   } finally { await guest.close(); }
+});
+
+
+test('read-only shared collections allow browsing and downloads while rejecting uploads and imports', async ({ page }) => {
+  const settings = await import('../src/lib/server/settings');
+  const auth = await import('../src/lib/server/auth');
+  const id = settings.createCollection({ ...settings.readSettings(), readOnly: true, collectionName: 'Public demo' });
+  const share = settings.withSettings(() => auth.createShareLink(), id);
+  const root = settings.readSettings().photoRoot;
+  const before = await readdir(root);
+  const collection = `${origin}${basePath}/c/${id}`;
+  await page.goto(`${collection}/#share=${share}`);
+  await page.getByRole('textbox', { name: 'Your name' }).fill('Demo visitor');
+  await page.getByRole('button', { name: /Join collection/ }).click();
+  await expect(page.locator('.photo-tile').first()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Upload photos', exact: true })).toHaveCount(0);
+  await expect(page.getByText('Read-only', { exact: true })).toBeVisible();
+  expect(await readdir(root)).toEqual(before);
+  for (const endpoint of ['/api/upload', '/api/upload/check', '/api/upload/resumable/11111111-1111-4111-8111-111111111111', '/api/import', '/api/immich/scan']) {
+    const response = await page.request.post(`${collection}${endpoint}`, { headers: { origin }, data: {} });
+    expect(response.status(), endpoint).toBe(403);
+    expect((await response.json()).error).toContain('read-only');
+  }
+  const response = await page.request.get(`${collection}/api/photos`);
+  expect(response.ok()).toBe(true);
+  const photos = (await response.json()).photos;
+  expect(photos.length).toBeGreaterThan(0);
+  expect((await page.request.get(`${collection}/api/media/${photos[0].id}?kind=original`)).ok()).toBe(true);
+  expect(await readdir(root)).toEqual(before);
 });

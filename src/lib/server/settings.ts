@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import path from 'node:path';
 
 export type Settings = {
+  readOnly?: boolean;
   collectionName: string;
   photoRoot: string;
   immichUrl: string;
@@ -47,6 +48,7 @@ function settingsFor(id: string): Settings {
   const filename = settingsFile(id);
   const saved: Partial<Settings> = existsSync(filename) ? JSON.parse(readFileSync(filename, 'utf8')) : {};
   return {
+    readOnly: saved.readOnly === true,
     collectionName: saved.collectionName ?? process.env.COLLECTION_NAME ?? 'Our shared moments',
     photoRoot: saved.photoRoot ?? path.resolve(process.env.PHOTO_ROOT || './var/photos'),
     immichUrl: saved.immichUrl ?? process.env.IMMICH_URL ?? '',

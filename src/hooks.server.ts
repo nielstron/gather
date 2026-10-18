@@ -1,4 +1,4 @@
-import { withSettings, sessionCookieName } from '$lib/server/settings';
+import { withSettings, sessionCookieName, readSettings } from '$lib/server/settings';
 import { getAdminSession } from '$lib/server/admin';
 import { json, type Handle } from '@sveltejs/kit';
 import { getSession } from '$lib/server/auth';
@@ -25,6 +25,8 @@ export const handle: Handle = ({ event, resolve }) => withSettings(async () => {
     response = json({ error: 'Sign in as the administrator.' }, { status: 401 });
   } else if (isApi && !pathname.startsWith('/api/admin/') && !publicApis.has(pathname) && !event.locals.user) {
     response = json({ error: 'Open your invitation link to sign in.' }, { status: 401 });
+  } else if (readSettings().readOnly && (pathname === '/api/upload' || pathname.startsWith('/api/upload/') || pathname === '/api/import' || pathname === '/api/immich/scan')) {
+    response = json({ error: 'This collection is read-only. You can browse and download photos.' }, { status: 403 });
   } else {
     response = await resolve(event);
   }

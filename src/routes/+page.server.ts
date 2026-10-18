@@ -5,6 +5,7 @@ import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = ({ locals }) => ({
   user: locals.user,
+  readOnly: readSettings().readOnly === true,
   uploadOwnerScope: locals.user ? uploadScope(locals.user, 'browser-queue') : '',
   members: locals.user ? listMembers() : [],
   collectionName: config.collectionName,

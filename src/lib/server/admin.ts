@@ -112,7 +112,8 @@ export function validateSettings(input: Record<string, unknown>): Settings {
     ? path.posix.join(process.env.IMMICH_ALLOWED_ROOT, path.relative(allowedPhotoRoot(), photoRoot).split(path.sep).join('/'))
     : string('immichPhotoRoot');
   if (immichPhotoRoot && (!path.posix.isAbsolute(immichPhotoRoot) || immichPhotoRoot.includes('\\') || path.posix.normalize(immichPhotoRoot) !== immichPhotoRoot)) throw Object.assign(new Error('Enter the absolute collection path visible inside Immich.'), { status: 400 });
-  return { collectionName, photoRoot, immichUrl, immichLibraryId, immichPhotoRoot,
+  if (input.readOnly !== undefined && typeof input.readOnly !== 'boolean') throw Object.assign(new Error('Invalid read-only setting.'), { status: 400 });
+  return { readOnly: input.readOnly === true, collectionName, photoRoot, immichUrl, immichLibraryId, immichPhotoRoot,
     immichApiKey: string('immichApiKey', 1024) || previous.immichApiKey,
     immichScanApiKey: string('immichScanApiKey', 1024) || previous.immichScanApiKey };
 }

@@ -5,13 +5,13 @@
   import { collectionBase, collectionPath } from '$lib/collection-path';
   $: base = collectionBase($page.url.pathname, appBase);
 
-  type Settings = { collectionName: string; photoRoot: string; immichUrl: string; immichLibraryId: string; immichPhotoRoot: string; immichApiKey: string; immichScanApiKey: string };
+  type Settings = { readOnly: boolean; collectionName: string; photoRoot: string; immichUrl: string; immichLibraryId: string; immichPhotoRoot: string; immichApiKey: string; immichScanApiKey: string };
   type Member = { id: string; name: string; folder: string; active: number; shared: number };
   type Overview = { collectionId: string; collections: { id: string; name: string; photoRoot: string }[]; settings: Omit<Settings, 'immichApiKey' | 'immichScanApiKey'>; automaticImmichPath: boolean; allowedRoot: string; basePath: string; origin: string; previewKeyConfigured: boolean; scanKeyConfigured: boolean; sharedLinkActive: boolean; members: Member[] };
   let loading = true, authenticated = false, configured = false, busy = false;
   let password = '', setupToken = '', error = '', notice = '', generatedLink = '';
   let overview: Overview | undefined;
-  let settings: Settings = { collectionName: '', photoRoot: '', immichUrl: '', immichLibraryId: '', immichPhotoRoot: '', immichApiKey: '', immichScanApiKey: '' };
+  let settings: Settings = { readOnly: false, collectionName: '', photoRoot: '', immichUrl: '', immichLibraryId: '', immichPhotoRoot: '', immichApiKey: '', immichScanApiKey: '' };
   let confirmFolderChange = false;
   let browserOpen = false, browsingFolder = '', directories: string[] = [];
   let memberName = '', memberFolder = '', copied = false;
@@ -150,7 +150,8 @@
           <section class="card">
             <div class="section-heading"><span class="step">01</span><div><h2>The collection</h2><p>Everything inside this folder is visible to everyone you invite.</p></div></div>
             <label>Collection name<input bind:value={settings.collectionName} maxlength="120" required placeholder="A weekend worth remembering" /></label>
-            <div class="collection-choice"><span class="eyebrow">Sharing now</span><h2>{folderLabel(settings.photoRoot)}</h2><p>Your photos stay in this folder. Guests can browse and download everything inside it, and upload into their personal subfolder.</p><button type="button" class="secondary" on:click={() => { browserTarget = 'current'; void browse(overview!.allowedRoot); }}>Choose a different folder</button></div>
+            <label class="confirmation"><input type="checkbox" bind:checked={settings.readOnly} /><span>Read-only collection: guests can browse and download; uploads and imports are disabled.</span></label>
+            <div class="collection-choice"><span class="eyebrow">Sharing now</span><h2>{folderLabel(settings.photoRoot)}</h2><p>Your photos stay in this folder. Guests can browse and download everything inside it.{#if !settings.readOnly} They can also upload into their personal subfolder.{/if}</p><button type="button" class="secondary" on:click={() => { browserTarget = 'current'; void browse(overview!.allowedRoot); }}>Choose a different folder</button></div>
             {#if browserOpen && browserTarget === 'current'}<div class="folder-browser"><div class="folder-heading"><strong>{folderLabel(browsingFolder)}</strong><button type="button" class="quiet" on:click={() => browserOpen = false}>Close</button></div>{#if browsingFolder !== overview.allowedRoot}<button type="button" class="folder" on:click={() => browse(browsingFolder.slice(0, browsingFolder.lastIndexOf('/')))}>↑ Parent folder</button>{/if}{#each directories as directory}<button type="button" class="folder" on:click={() => browse(`${browsingFolder}/${directory}`)}>▱ {directory}<span>→</span></button>{/each}{#if !directories.length}<p class="muted">No subfolders.</p>{/if}<button type="button" class="primary" on:click={() => { settings.photoRoot = browsingFolder; browserOpen = false; }}>Use this folder</button></div>{/if}
             {#if changedFolder}<label class="confirmation"><input type="checkbox" bind:checked={confirmFolderChange} required /><span>I understand changing folders signs out all guests and removes their invitations. Photos are preserved.</span></label>{/if}
           </section>

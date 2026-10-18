@@ -24,7 +24,7 @@
   import Icon from '$lib/components/Icon.svelte';
   import type { Member, Photo, PhotoList } from '$lib/types';
 
-  export let data: { user: Member | null; members: Member[]; collectionName: string; uploadOwnerScope: string; maxUploadBytes: number; immichConfigured: boolean };
+  export let data: { readOnly: boolean; user: Member | null; members: Member[]; collectionName: string; uploadOwnerScope: string; maxUploadBytes: number; immichConfigured: boolean };
   type Upload = { id: string; file: File; progress: number; status: 'preparing' | 'waiting' | 'checking' | 'uploading' | 'retrying' | 'done' | 'error' | 'cancelled'; attempts?: number; duplicate?: boolean; error?: string; xhr?: XMLHttpRequest; checksum?: string; controller?: AbortController };
   let photos: Photo[] = [];
   let folders: PhotoList['folders'] = [];
@@ -100,6 +100,7 @@
     finally { requestingWakeLock = false; }
   }
   async function recoverUploads() {
+    if (data.readOnly) { restoringUploads = false; return; }
     if (queueScope) {
       try {
         const saved = await restoreQueuedUploads(queueScope);
@@ -396,7 +397,7 @@
   }
 
   async function addUploads(files: FileList | File[]) {
-    if (!data.user) return;
+    if (!data.user || data.readOnly) return;
     const items: Upload[] = Array.from(files).map((file) => ({ id: crypto.randomUUID(), file, progress: 0, status: file.size > data.maxUploadBytes ? 'error' : 'preparing', error: file.size > data.maxUploadBytes ? `This file exceeds the ${bytes(data.maxUploadBytes)} limit.` : undefined }));
     uploads = [...uploads, ...items];
     uploadPanelOpen = true;
@@ -455,6 +456,7 @@
   }
 
   async function processUploads() {
+    if (data.readOnly) return;
     if (uploading || restoringUploads || disposed || !data.user || !uploads.some(item => item.status === 'waiting')) return;
     uploading = true;
     const completedBefore = uploadCompletions;
@@ -599,7 +601,7 @@
     if (item.file.size > 1024 * 1024) void fetch(`${base}/api/upload/resumable/${item.id}`, { method: 'DELETE' }).catch(() => {});
   }
   function handleDrag(event: DragEvent) {
-    if (!data.user || !event.dataTransfer?.types.includes('Files')) return;
+    if (!data.user || data.readOnly || !event.dataTransfer?.types.includes('Files')) return;
     event.preventDefault(); dragging = true;
     clearTimeout(dragTimer); dragTimer = setTimeout(() => { dragging = false; }, 200);
   }
@@ -690,7 +692,7 @@
         <label class="search-input"><Icon name="search" size={18} /><input type="search" aria-label="Search photos" bind:this={searchInput} on:focus={() => searchActive = true} on:click={() => searchActive = true} aria-controls="search-controls" placeholder="Describe a scene, place, or moment…" bind:value={query} on:input={search} /><span class="search-hint">{searchOptions.mode === 'semantic' ? 'by meaning' : searchOptions.mode === 'filename' ? 'by filename' : 'descriptions'}</span></label>
         <div class="transfer-actions">
           <button class="icon-button" on:click={() => downloadOptions.open()} aria-label="Download photos" aria-haspopup="dialog" title="Download photos"><Icon name="download" size={20} /></button>
-          <ImportPhotos {base} name={data.user.name} collectionName={data.collectionName} bind:this={uploadOptions} on:choose={() => input.click()} on:changed={() => void loadPhotos()} />
+          {#if !data.readOnly}<ImportPhotos {base} name={data.user.name} collectionName={data.collectionName} bind:this={uploadOptions} on:choose={() => input.click()} on:changed={() => void loadPhotos()} />{:else}<span class="read-only-label">Read-only</span>{/if}
         </div>
       </header>
       <div id="search-controls" class="search-controls" class:visible={searchActive} bind:this={searchControls}>
@@ -738,7 +740,7 @@
             </div>
           </section>
           {/each}
-          {#if !photos.length && !loading}<div class="empty-state"><div class="empty-illustration"><span class="empty-photo"><Icon name="image" size={39} /></span><span class="empty-plus">+</span></div><Badge size="small" color="secondary">{hasSearch ? 'Nothing here yet' : 'Room for every moment'}</Badge><h2>{hasSearch ? 'No matching photos' : folder && folder !== data.user.folder ? 'Their story starts here' : 'The best memories are shared'}</h2><p>{hasSearch ? 'Try another description, adjust the filters, or explore a different folder.' : folder && folder !== data.user.folder ? `${currentOwner?.name || 'This person'} hasn’t shared any photos yet. Check back soon.` : 'Add your first photos and give everyone a new perspective. Your originals stay right here, on your server.'}</p>{#if hasSearch}<Button class="primary-button" onclick={() => { query = ''; searchFilters.reset(); }}>Clear search</Button>{:else}<Button class="primary-button" onclick={() => uploadOptions.open()}><Icon name="upload" size={18} />Upload your photos</Button><span class="empty-drop-hint">or drop them anywhere on this page</span>{/if}</div>{:else if !photos.length && loading}<div class="loading-state"><span class="large-spinner"></span><p>Gathering your photos…</p></div>{/if}
+          {#if !photos.length && !loading}<div class="empty-state"><div class="empty-illustration"><span class="empty-photo"><Icon name="image" size={39} /></span><span class="empty-plus">+</span></div><Badge size="small" color="secondary">{hasSearch ? 'Nothing here yet' : 'Room for every moment'}</Badge><h2>{hasSearch ? 'No matching photos' : folder && folder !== data.user.folder ? 'Their story starts here' : 'The best memories are shared'}</h2><p>{hasSearch ? 'Try another description, adjust the filters, or explore a different folder.' : folder && folder !== data.user.folder ? `${currentOwner?.name || 'This person'} hasn’t shared any photos yet. Check back soon.` : data.readOnly ? 'No photos in this folder yet.' : 'Add your first photos and give everyone a new perspective. Your originals stay right here, on your server.'}</p>{#if hasSearch}<Button class="primary-button" onclick={() => { query = ''; searchFilters.reset(); }}>Clear search</Button>{:else if !data.readOnly}<Button class="primary-button" onclick={() => uploadOptions.open()}><Icon name="upload" size={18} />Upload your photos</Button><span class="empty-drop-hint">or drop them anywhere on this page</span>{/if}</div>{:else if !photos.length && loading}<div class="loading-state"><span class="large-spinner"></span><p>Gathering your photos…</p></div>{/if}
         </div>
         {#if hasMore}<div class="load-more"><Button variant="outline" onclick={() => loadPhotos(true)} loading={loading}>Load more photos</Button><span>Showing {photos.length} of {total}</span></div>{/if}
       </section>
