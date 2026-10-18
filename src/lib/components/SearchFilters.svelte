@@ -1,5 +1,8 @@
 <script lang="ts">
-  import { base } from '$app/paths';
+  import { base as appBase } from '$app/paths';
+  import { page } from '$app/stores';
+  import { collectionBase } from '$lib/collection-path';
+  $: base = collectionBase($page.url.pathname, appBase);
   import { createEventDispatcher, onDestroy } from 'svelte';
   import Thumbnail from './Thumbnail.svelte';
   import Icon from './Icon.svelte';

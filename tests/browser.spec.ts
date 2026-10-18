@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { createServer, type Server } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtemp, mkdir, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, lstat, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
@@ -25,7 +25,7 @@ async function listen(server: Server) {
 async function indexFiles() {
   for (const folder of await readdir(path.join(directory, 'photos'))) {
     for (const filename of await readdir(path.join(directory, 'photos', folder))) {
-      if (filename.startsWith('.')) continue;
+      if (filename.startsWith('.') || !(await lstat(path.join(directory, 'photos', folder, filename))).isFile()) continue;
       const relative = `${folder}/${filename}`;
       const hex = createHash('sha256').update(relative).digest('hex');
       const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4000-8000-${hex.slice(12, 24)}`;
@@ -736,4 +736,86 @@ test('search defaults to semantic relevance, combines people and conditions, and
   await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
   await page.getByLabel('Search photos', { exact: true }).fill('no-such-photo');
   await expect(page.getByRole('heading', { name: 'No matching photos' })).toBeVisible();
+});
+
+
+test('one admin creates and switches collections while guest access, files, and invitations stay isolated', async ({ page, browser, request }) => {
+  const adminEndpoint = `${origin}${basePath}/api/admin`;
+  const session = await (await page.request.get(`${adminEndpoint}/session`)).json();
+  const login = await page.request.post(`${adminEndpoint}/session`, { headers: { origin }, data: {
+    action: session.configured ? 'login' : 'setup', password: 'a-private-admin-password',
+    ...(!session.configured ? { token: (await readFile(path.join(directory, 'data', 'admin-setup-token'), 'utf8')).trim() } : {})
+  } });
+  expect(login.status()).toBe(200);
+  const initial = await (await page.request.get(`${adminEndpoint}/config`)).json();
+  const saved = await page.request.post(`${adminEndpoint}/config`, { headers: { origin }, data: { action: 'save', confirmFolderChange: true, settings: {
+    ...initial.settings, collectionName: 'First collection', photoRoot: path.join(directory, 'photos', 'host'), immichPhotoRoot: '/external/gather/host', immichApiKey: '', immichScanApiKey: ''
+  } } });
+  expect(saved.status()).toBe(200);
+  const firstInvite = await (await page.request.post(`${adminEndpoint}/config`, { headers: { origin }, data: { action: 'create-member', name: 'First guest', folder: 'Owner' } })).json();
+  const guest = await browser.newContext();
+  const firstPage = await guest.newPage();
+  try {
+    // The full suite already consumes the default collection's sign-in budget.
+    // Seed this existing visitor; the new collection still signs in through its invitation UI.
+    const auth = await import('../src/lib/server/auth');
+    const firstToken = new URLSearchParams(new URL(firstInvite.link).hash.slice(1)).get('invite')!;
+    const firstSession = auth.exchangeInvite(firstToken)!;
+    await guest.addCookies([{ name: 'gather_session', value: firstSession.sessionToken, domain: new URL(origin).hostname, path: basePath || '/', httpOnly: true, sameSite: 'Lax' }]);
+    await firstPage.goto(`${origin}${basePath}/`);
+    await expect(firstPage.locator('.photo-tile')).toHaveCount(2);
+    await page.goto(`${origin}${basePath}/admin`);
+    await page.getByRole('button', { name: '+ New collection', exact: true }).click();
+    await page.getByLabel('New collection name', { exact: true }).fill('Second collection');
+    await page.getByRole('button', { name: 'Browse folders', exact: true }).click();
+    await page.getByRole('button', { name: '▱ bob →', exact: true }).click();
+    await page.getByRole('button', { name: 'Use this folder', exact: true }).click();
+    await page.getByRole('button', { name: 'Create collection', exact: true }).click();
+    await page.waitForURL(new RegExp(`${basePath}/c/[a-z0-9-]+/admin$`));
+    const collectionBase = new URL(page.url()).pathname.replace(/\/admin$/, '');
+    const secondApi = `${origin}${collectionBase}/api`;
+    await expect(page.getByLabel('Manage collection')).toHaveValue(collectionBase.split('/').at(-1)!);
+    const overview = await (await page.request.get(`${secondApi}/admin/config`)).json();
+    expect(overview.collections).toHaveLength(2);
+    expect(overview.settings.photoRoot).toBe(path.join(directory, 'photos', 'bob'));
+    expect(overview.settings.immichPhotoRoot).toBe('/external/gather/bob');
+    expect(overview.previewKeyConfigured).toBe(true);
+    expect(overview.settings.immichApiKey).toBeUndefined();
+    expect(overview.members).toEqual([]);
+    expect((await firstPage.request.get(`${secondApi}/photos`)).status()).toBe(401);
+    const oldToken = new URLSearchParams(new URL(firstInvite.link).hash.slice(1)).get('invite');
+    expect((await firstPage.request.post(`${secondApi}/session`, { headers: { origin }, data: { token: oldToken } })).status()).toBe(401);
+    await page.getByRole('button', { name: 'People & invitations', exact: true }).click();
+    await page.getByLabel('Display name', { exact: true }).fill('Second guest');
+    await page.getByLabel('Upload folder', { exact: true }).fill('Owner');
+    await page.getByRole('button', { name: 'Create personal invitation', exact: true }).click();
+    const secondInvite = await page.getByRole('textbox', { name: 'Generated invitation link' }).inputValue();
+    expect(new URL(secondInvite).pathname).toBe(`${collectionBase}/`);
+    const secondPage = await guest.newPage();
+    await secondPage.goto(secondInvite);
+    await expect(secondPage.locator('.photo-tile')).toHaveCount(1);
+    const both = await Promise.all([firstPage.request.get(`${origin}${basePath}/api/photos`), secondPage.request.get(`${secondApi}/photos`)]);
+    const [one, two] = await Promise.all(both.map(response => response.json()));
+    expect(one.photos.map((photo: any) => photo.name).sort()).toEqual(['weekend-0.jpg', 'weekend-1.jpg']);
+    expect(two.photos.map((photo: any) => photo.name)).toEqual(['weekend-2.jpg']);
+    expect((await firstPage.request.get(`${origin}${basePath}/api/media/${two.photos[0].id}?kind=original`)).status()).toBe(404);
+    expect((await secondPage.request.get(`${secondApi}/media/${one.photos[0].id}?kind=original`)).status()).toBe(404);
+    const image = await sharp({ create: { width: 19, height: 21, channels: 3, background: '#a12390' } }).png().toBuffer();
+    await secondPage.locator('input[type="file"]').setInputFiles({ name: 'only-second.png', mimeType: 'image/png', buffer: image });
+    await expect(secondPage.locator('.upload-panel')).toContainText('Saved · Immich preview processing');
+    expect(await readFile(path.join(directory, 'photos', 'bob', 'Owner', 'only-second.png'))).toEqual(image);
+    expect((await (await firstPage.request.get(`${origin}${basePath}/api/photos`)).json()).total).toBe(2);
+    const firstMembers = await (await page.request.get(`${adminEndpoint}/config`)).json();
+    expect(firstMembers.members.map((member: any) => member.name)).toEqual(['First guest']);
+    await page.getByLabel('Manage collection').selectOption('default');
+    await page.waitForURL(`${origin}${basePath}/admin`);
+    await expect(page.getByLabel('Collection name', { exact: true })).toHaveValue('First collection');
+    await secondPage.request.post(`${secondApi}/logout`, { headers: { origin }, data: {} });
+    expect((await secondPage.request.get(`${secondApi}/photos`)).status()).toBe(401);
+    expect((await firstPage.request.get(`${origin}${basePath}/api/photos`)).status()).toBe(200);
+    const cookies = await guest.cookies();
+    expect(cookies.some(cookie => cookie.name === 'gather_session')).toBe(true);
+    expect(cookies.some(cookie => cookie.name.startsWith('gather_session_'))).toBe(false);
+    expect((await request.get(`${secondApi}/admin/config`)).status()).toBe(401);
+  } finally { await guest.close(); }
 });

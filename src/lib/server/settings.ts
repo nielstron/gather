@@ -1,3 +1,5 @@
+import { error } from '@sveltejs/kit';
+import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -14,16 +16,35 @@ export type Settings = {
 
 export function dataRoot() { return path.resolve(process.env.DATA_ROOT || './var/data'); }
 
-const requestSettings = new AsyncLocalStorage<Settings>();
-
-export function withSettings<T>(callback: () => T): T {
-  return requestSettings.run(readSettings(), callback);
+type Snapshot = { id: string; settings: Settings };
+const requestSettings = new AsyncLocalStorage<Snapshot>();
+const validId = /^[a-z0-9-]{1,64}$/;
+function settingsFile(id: string) { return id === 'default' ? path.join(dataRoot(), 'settings.json') : path.join(dataRoot(), 'collections', id, 'settings.json'); }
+function collectionIds(): string[] {
+  const filename = path.join(dataRoot(), 'collections.json');
+  return existsSync(filename) ? JSON.parse(readFileSync(filename, 'utf8')) : [];
 }
-
-export function readSettings(): Settings {
-  const snapshot = requestSettings.getStore();
-  if (snapshot) return snapshot;
-  const filename = path.join(dataRoot(), 'settings.json');
+function atomicJson(filename: string, value: unknown) {
+  mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });
+  const temporary = filename + '.tmp';
+  writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
+  renameSync(temporary, filename);
+}
+export function currentCollectionId() { return requestSettings.getStore()?.id || 'default'; }
+export function collectionDataRoot() {
+  const id = currentCollectionId();
+  return id === 'default' ? dataRoot() : path.join(dataRoot(), 'collections', id);
+}
+export function sessionCookieName() {
+  const id = currentCollectionId();
+  return id === 'default' ? 'gather_session' : `gather_session_${id}`;
+}
+export function withSettings<T>(callback: () => T, id = 'default'): T {
+  return requestSettings.run({ id, settings: settingsFor(id) }, callback);
+}
+function settingsFor(id: string): Settings {
+  if (!validId.test(id) || (id !== 'default' && !collectionIds().includes(id))) error(404, 'Collection not found');
+  const filename = settingsFile(id);
   const saved: Partial<Settings> = existsSync(filename) ? JSON.parse(readFileSync(filename, 'utf8')) : {};
   return {
     collectionName: saved.collectionName ?? process.env.COLLECTION_NAME ?? 'Our shared moments',
@@ -35,13 +56,23 @@ export function readSettings(): Settings {
     immichScanApiKey: saved.immichScanApiKey ?? process.env.IMMICH_SCAN_API_KEY ?? '',
   };
 }
-
+export function readSettings(): Settings { return requestSettings.getStore()?.settings || settingsFor('default'); }
 export function writeSettings(settings: Settings) {
-  mkdirSync(dataRoot(), { recursive: true, mode: 0o700 });
-  const filename = path.join(dataRoot(), 'settings.json');
-  const temporary = filename + '.tmp';
-  writeFileSync(temporary, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
-  renameSync(temporary, filename);
+  atomicJson(settingsFile(currentCollectionId()), settings);
   const snapshot = requestSettings.getStore();
-  if (snapshot) Object.assign(snapshot, settings);
+  if (snapshot) Object.assign(snapshot.settings, settings);
+}
+export function listCollections() {
+  return ['default', ...collectionIds()].map(id => {
+    const settings = settingsFor(id);
+    return { id, name: settings.collectionName, photoRoot: settings.photoRoot };
+  });
+}
+export function createCollection(settings: Settings) {
+  const ids = collectionIds();
+  if (ids.length >= 99) throw Object.assign(new Error('Up to 100 collections are supported.'), { status: 400 });
+  const id = randomUUID();
+  atomicJson(settingsFile(id), settings);
+  atomicJson(path.join(dataRoot(), 'collections.json'), [...ids, id]);
+  return id;
 }

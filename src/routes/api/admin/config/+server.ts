@@ -1,8 +1,10 @@
 import { json } from '@sveltejs/kit';
 import { readdir } from 'node:fs/promises';
 import { allowedPhotoRoot, validatePhotoRoot, validateSettings } from '$lib/server/admin';
-import { readSettings, writeSettings } from '$lib/server/settings';
+import { currentCollectionId, createCollection, listCollections, readSettings, writeSettings } from '$lib/server/settings';
 import { accessOverview, createMember, createShareLink, resetCollectionAccess, revokeMember, revokeShareLink, rotateMember, rotateShareLink } from '$lib/server/auth';
+import path from 'node:path';
+import { collectionPath } from '$lib/collection-path';
 import { config } from '$lib/server/config';
 import { apiError, boundedText } from '$lib/server/http';
 import { invalidatePhotos } from '$lib/server/media';
@@ -11,12 +13,12 @@ import type { RequestHandler } from './$types';
 
 function overview() {
   const { immichApiKey, immichScanApiKey, ...settings } = readSettings();
-  return { settings, previewKeyConfigured: !!immichApiKey, scanKeyConfigured: !!immichScanApiKey,
-    automaticImmichPath: !!process.env.IMMICH_ALLOWED_ROOT, allowedRoot: allowedPhotoRoot(), basePath: config.basePath, origin: config.origin, ...accessOverview() };
+  return { settings, collectionId: currentCollectionId(), collections: listCollections(), previewKeyConfigured: !!immichApiKey, scanKeyConfigured: !!immichScanApiKey,
+    automaticImmichPath: !!process.env.IMMICH_ALLOWED_ROOT, allowedRoot: allowedPhotoRoot(), basePath: collectionPath(config.basePath, currentCollectionId()), origin: config.origin, ...accessOverview() };
 }
 
 function invitation(token: string, type: 'share' | 'invite') {
-  const url = new URL(`${config.basePath}/`, config.origin);
+  const url = new URL(`${collectionPath(config.basePath, currentCollectionId())}/`, config.origin);
   url.hash = `${type}=${token}`;
   return url.toString();
 }
@@ -38,6 +40,24 @@ export const POST: RequestHandler = async ({ request }) => {
     let link: string | undefined;
     let message = '';
     switch (body.action) {
+      case 'create-collection': {
+        if (typeof body.name !== 'string' || typeof body.photoRoot !== 'string') return json({ error: 'Choose a name and folder for the new collection.' }, { status: 400 });
+        const previous = readSettings();
+        let immichPhotoRoot = '';
+        if (body.inheritConnection === true && previous.immichPhotoRoot) {
+          const relative = path.relative(allowedPhotoRoot(), previous.photoRoot).split(path.sep).filter(Boolean);
+          let parent = previous.immichPhotoRoot;
+          for (const _ of relative) parent = path.posix.dirname(parent);
+          immichPhotoRoot = path.posix.join(parent, path.relative(allowedPhotoRoot(), body.photoRoot).split(path.sep).join('/'));
+        }
+        const settings = validateSettings({ ...previous, collectionName: body.name, photoRoot: body.photoRoot, immichPhotoRoot,
+          ...(body.inheritConnection === true ? {} : { immichUrl: '', immichLibraryId: '', immichApiKey: '', immichScanApiKey: '' }) });
+        // Blank keys normally preserve saved credentials; a new disconnected collection must start empty.
+        if (body.inheritConnection !== true) { settings.immichApiKey = ''; settings.immichScanApiKey = ''; }
+        const id = createCollection(settings);
+        return json({ collectionId: id, adminUrl: `${collectionPath(config.basePath, id)}/admin`, message: 'Collection created.' }, { status: 201 });
+      }
+
       case 'save': {
         const settings = validateSettings(body.settings as Record<string, unknown>);
         const changedRoot = settings.photoRoot !== readSettings().photoRoot;

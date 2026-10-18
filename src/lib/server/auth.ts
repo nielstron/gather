@@ -2,10 +2,11 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, readdirSync, rmdirSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
+import { collectionDataRoot } from './settings';
 import { config } from './config';
 import type { Member, Photo } from '../types';
 
-let database: Database.Database | undefined;
+const databases = new Map<string, Database.Database>();
 const tokenPattern = /^[A-Za-z0-9_-]{43}$/;
 
 export class AuthError extends Error {
@@ -13,10 +14,11 @@ export class AuthError extends Error {
 }
 
 function db() {
-  if (database) return database;
-  mkdirSync(config.dataRoot, { recursive: true, mode: 0o700 });
-  const filename = path.join(config.dataRoot, 'auth.sqlite');
-  database = new Database(filename);
+  const filename = path.join(collectionDataRoot(), 'auth.sqlite');
+  const known = databases.get(filename);
+  if (known) return known;
+  mkdirSync(collectionDataRoot(), { recursive: true, mode: 0o700 });
+  const database = new Database(filename);
   chmodSync(filename, 0o600);
   database.pragma('journal_mode = WAL');
   database.pragma('foreign_keys = ON');
@@ -63,6 +65,7 @@ function db() {
     }
     if (!columns.has('shared')) database!.exec('ALTER TABLE members ADD COLUMN shared INTEGER NOT NULL DEFAULT 0');
   }).immediate();
+  databases.set(filename, database);
   return database;
 }
 

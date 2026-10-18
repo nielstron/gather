@@ -6,6 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import sharp from 'sharp';
+import { currentCollectionId } from './settings';
 import { config } from './config';
 import { readFileChecksum, writeFileChecksum } from './auth';
 import { runConcurrentQueue, mapConcurrent } from '../async';
@@ -13,10 +14,21 @@ import type { Member, Photo } from '../types';
 
 const extensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif', '.tif', '.tiff', '.heic', '.heif']);
 const formats = new Set(['jpeg', 'png', 'webp', 'avif', 'gif', 'tiff', 'heif']);
-let scanCache: { root: string; time: number; photos: Photo[]; ids: Set<string> } | undefined;
-let scanning: Promise<Photo[]> | undefined;
-let scanningRoot = '';
-let generation = 0;
+type ScanCache = { root: string; time: number; photos: Photo[]; ids: Set<string> };
+type ScanState = { cache?: ScanCache; scanning?: Promise<Photo[]>; generation: number };
+const scans = new Map<string, ScanState>();
+function scanState(): ScanState {
+  let state = scans.get(config.photoRoot);
+  if (!state) {
+    state = { generation: 0 }; scans.set(config.photoRoot, state);
+    if (scans.size > 16) {
+      for (const [root, cached] of scans) {
+        if (root !== config.photoRoot && !cached.scanning) { scans.delete(root); break; }
+      }
+    }
+  }
+  return state;
+}
 
 export class MediaError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -77,21 +89,21 @@ async function photoInfo(relative: string, members: Member[], dimensions = { wid
   return { id: encodeId(relative), revision, name: path.basename(relative), folder, owner: members.find((member) => member.folder === folder)?.name || folder || 'Shared folder', width: dimensions.width, height: dimensions.height, bytes: stat.size, modifiedAt: stat.mtime.toISOString(), previewStatus: 'pending' };
 }
 
-export function invalidatePhotos() { generation++; if (scanCache) scanCache.time = 0; }
+export function invalidatePhotos() { const state = scanState(); state.generation++; if (state.cache) state.cache.time = 0; }
 
 export async function scanPhotos(members: Member[], allowStale = false): Promise<Photo[]> {
+  const state = scanState();
   const attribute = (photos: Photo[]) => {
     const names = new Map(members.map(member => [member.folder, member.name]));
     return photos.map(photo => ({ ...photo, owner: names.get(photo.folder) || photo.folder || 'Shared folder' }));
   };
-  if (scanCache && scanCache.root === config.photoRoot && Date.now() - scanCache.time < 15_000) return attribute(scanCache.photos);
-  if (scanning && scanningRoot === config.photoRoot) {
-    if (allowStale && scanCache?.root === config.photoRoot) return attribute(scanCache.photos);
-    return attribute(await scanning);
+  if (state.cache && state.cache.root === config.photoRoot && Date.now() - state.cache.time < 15_000) return attribute(state.cache.photos);
+  if (state.scanning) {
+    if (allowStale && state.cache?.root === config.photoRoot) return attribute(state.cache.photos);
+    return attribute(await state.scanning);
   }
-  scanningRoot = config.photoRoot;
-  const startedGeneration = generation;
-  scanning = (async () => {
+  const startedGeneration = state.generation;
+  state.scanning = (async () => {
     await ensureRoot();
     const photos: Photo[] = [];
     type Work = { relative: string; depth: number; directory: boolean };
@@ -116,15 +128,15 @@ export async function scanPhotos(members: Member[], allowStale = false): Promise
       }
     });
     photos.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.id.localeCompare(b.id));
-    if (generation === startedGeneration) scanCache = { root: config.photoRoot, time: Date.now(), photos, ids: new Set(photos.map(photo => photo.id)) };
+    if (state.generation === startedGeneration) state.cache = { root: config.photoRoot, time: Date.now(), photos, ids: new Set(photos.map(photo => photo.id)) };
     return photos;
   })();
-  const work = scanning;
-  if (allowStale && scanCache?.root === config.photoRoot) {
-    void work.then(() => { if (scanning === work) scanning = undefined; }, () => { if (scanning === work) scanning = undefined; });
-    return attribute(scanCache.photos);
+  const work = state.scanning;
+  if (allowStale && state.cache?.root === config.photoRoot) {
+    void work.then(() => { if (state.scanning === work) state.scanning = undefined; }, () => { if (state.scanning === work) state.scanning = undefined; });
+    return attribute(state.cache.photos);
   }
-  try { return attribute(await work); } finally { if (scanning === work) scanning = undefined; }
+  try { return attribute(await work); } finally { if (state.scanning === work) state.scanning = undefined; }
 }
 
 export function validateFilename(name: string) {
@@ -190,7 +202,7 @@ export async function saveUpload(member: Member, name: string, body: ReadableStr
     await pipeline(Readable.fromWeb(body as import('node:stream/web').ReadableStream<Uint8Array>), limiter, createWriteStream(temporary, { flags: 'wx', mode: 0o640 }), { signal });
     if (!size) throw new MediaError(400, 'The file is empty');
     const digest = checksum.digest('hex');
-    const contentKey = JSON.stringify([config.photoRoot, digest]);
+    const contentKey = JSON.stringify([currentCollectionId(), config.photoRoot, digest]);
     const running = committingContent.get(contentKey);
     if (running) return { ...await running, duplicate: true };
     const commit = (async () => {
@@ -223,6 +235,7 @@ export async function saveUpload(member: Member, name: string, body: ReadableStr
       invalidatePhotos();
       const photo = await photoInfo(`${member.folder}/${saved}`, [member], dimensions);
       if (!photo) throw new MediaError(500, 'Photo saved but could not be inspected');
+      const scanCache = scanState().cache;
       if (scanCache?.root === config.photoRoot) {
         scanCache.photos = [...scanCache.photos.filter(existing => existing.id !== photo.id), photo];
         scanCache.ids.add(photo.id);
@@ -252,6 +265,7 @@ export function contentDisposition(filename: string) {
 /** Previews only need an authorized path from the recent directory snapshot. */
 export async function previewPath(id: string): Promise<string> {
   const relative = decodeId(id);
+  const scanCache = scanState().cache;
   const ids = scanCache && scanCache.root === config.photoRoot && Date.now() - scanCache.time < 15_000
     ? scanCache.ids : new Set((await scanPhotos([])).map(photo => photo.id));
   if (!ids.has(id)) throw new MediaError(404, 'Photo not found');

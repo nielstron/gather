@@ -1,14 +1,15 @@
-import { withSettings } from '$lib/server/settings';
+import { withSettings, sessionCookieName } from '$lib/server/settings';
 import { getAdminSession } from '$lib/server/admin';
 import { json, type Handle } from '@sveltejs/kit';
 import { getSession } from '$lib/server/auth';
+import { collectionIdFromPath } from '$lib/collection-path';
 import { config } from '$lib/server/config';
 
 const publicApis = new Set(['/api/session', '/api/join', '/api/health', '/api/admin/session']);
 const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 export const handle: Handle = ({ event, resolve }) => withSettings(async () => {
-  event.locals.user = getSession(event.cookies.get('gather_session'));
+  event.locals.user = getSession(event.cookies.get(sessionCookieName()));
   const pathname = event.route?.id ?? event.url.pathname.slice(config.basePath.length);
   const isApi = pathname === '/api' || pathname.startsWith('/api/');
   let response: Response;
@@ -39,4 +40,4 @@ export const handle: Handle = ({ event, resolve }) => withSettings(async () => {
     response.headers.set('cache-control', 'private, no-store');
   }
   return response;
-});
+}, collectionIdFromPath(event.url.pathname, config.basePath));

@@ -1,3 +1,5 @@
+import { collectionPath } from '../collection-path';
+import { currentCollectionId, sessionCookieName } from './settings';
 import type { Cookies } from '@sveltejs/kit';
 import { config } from './config';
 
@@ -5,7 +7,7 @@ const attempts = new Map<string, { count: number; expires: number }>();
 const windowMs = 15 * 60_000;
 
 export function allowAuthAttempt(address: string, scope = 'session', limit = 15) {
-  const key = `${scope}:${address}`;
+  const key = `${scope === 'admin' ? 'global' : currentCollectionId()}:${scope}:${address}`;
   const now = Date.now();
   const existing = attempts.get(key);
   if (existing && existing.expires > now) {
@@ -44,8 +46,8 @@ export async function readAuthJson(request: Request): Promise<Record<string, unk
 }
 
 export function setSessionCookie(cookies: Cookies, token: string) {
-  cookies.set('gather_session', token, {
-    path: config.basePath || '/', httpOnly: true, sameSite: 'lax', secure: config.secureCookies,
+  cookies.set(sessionCookieName(), token, {
+    path: collectionPath(config.basePath, currentCollectionId()) || '/', httpOnly: true, sameSite: 'lax', secure: config.secureCookies,
     maxAge: config.sessionDays * 86400
   });
 }

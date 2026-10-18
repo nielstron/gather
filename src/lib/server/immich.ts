@@ -14,15 +14,11 @@ const CACHE_LIMIT = 2_000;
 const BATCH_SIZE = 100;
 const NEGATIVE_TTL = 10_000;
 const metadataRequests = createLimiter(8);
-let signature = '';
-let legacy = false;
+const legacyConfigurations = new Set<string>();
 export type LibraryScanResult = { state: 'queued' | 'scheduled' | 'unconfigured' | 'unavailable'; message?: string };
 const SCAN_COOLDOWN = 30_000;
-let scanSignature = '';
-let lastScanAt = 0;
-let lastScanResult: LibraryScanResult | undefined;
-let scanInFlight: Promise<LibraryScanResult> | undefined;
-let trailingScan: ReturnType<typeof setTimeout> | undefined;
+type ScanState = { lastAt: number; result?: LibraryScanResult; inFlight?: Promise<LibraryScanResult>; trailing?: ReturnType<typeof setTimeout> };
+const scanStates = new Map<string, ScanState>();
 
 export class ImmichError extends Error {
   constructor(public readonly status: number, message: string) {
@@ -45,12 +41,6 @@ function configuration(): Config | null {
   if (!path.posix.isAbsolute(root) || IMMICH_PHOTO_ROOT.includes('\\') || IMMICH_PHOTO_ROOT.includes('\0')) throw unavailable();
   const base = url.toString().replace(/\/+$/, '').replace(/\/api$/, '');
   const digest = createHash('sha256').update(JSON.stringify([base, IMMICH_API_KEY, IMMICH_LIBRARY_ID, root])).digest('hex');
-  if (digest !== signature) {
-    signature = digest;
-    cache.clear();
-    pending.clear();
-    legacy = false;
-  }
   return { url: base, key: IMMICH_API_KEY, library: IMMICH_LIBRARY_ID, root, signature: digest };
 }
 
@@ -67,7 +57,10 @@ function decodePhotoId(id: string): string {
   try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { throw new ImmichError(400, 'Invalid photo identifier.'); }
 }
 
-function remember(key: string, asset: Asset | null, pendingUntil?: number): void {
+function assetKey(config: Config, original: string) { return `${config.signature}:${original}`; }
+
+function remember(config: Config, original: string, asset: Asset | null, pendingUntil?: number): void {
+  const key = assetKey(config, original);
   cache.delete(key);
   cache.set(key, { asset, expires: Date.now() + (asset?.previewReady ? 60_000 : NEGATIVE_TTL), pendingUntil });
   while (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!);
@@ -136,7 +129,7 @@ async function queryBatch(config: Config, paths: string[]): Promise<Map<string, 
       if (match) found.set(match.original, match.asset);
     }
   };
-  if (!legacy) {
+  if (!legacyConfigurations.has(config.signature)) {
     try {
       let cursor: string | undefined;
       for (let page = 0; page < 10; page++) {
@@ -151,7 +144,7 @@ async function queryBatch(config: Config, paths: string[]): Promise<Map<string, 
       throw unavailable();
     } catch (error) {
       if (!(error instanceof ImmichError) || error.status !== 400) throw error;
-      legacy = true;
+      legacyConfigurations.add(config.signature);
     }
   }
   // Legacy originalPath is a text search, so always compare returned full paths.
@@ -181,9 +174,9 @@ async function resolveAssets(config: Config, paths: string[]): Promise<Map<strin
   const missing: string[] = [];
   const waiting: Promise<void>[] = [];
   for (const original of new Set(paths)) {
-    const known = cache.get(original);
+    const known = cache.get(assetKey(config, original));
     if (known && known.expires > Date.now()) { result.set(original, known.asset); continue; }
-    const existing = pending.get(original);
+    const existing = pending.get(assetKey(config, original));
     if (existing) waiting.push(existing.then((asset) => { result.set(original, asset); }));
     else missing.push(original);
   }
@@ -194,11 +187,11 @@ async function resolveAssets(config: Config, paths: string[]): Promise<Map<strin
     for (const original of batch) {
       const promise = lookup.then((found) => {
         const asset = found.get(original) ?? null;
-        if (config.signature === signature) remember(original, asset);
+        remember(config, original, asset);
         result.set(original, asset);
         return asset;
-      }).finally(() => { if (config.signature === signature) pending.delete(original); });
-      pending.set(original, promise);
+      }).finally(() => { pending.delete(assetKey(config, original)); });
+      pending.set(assetKey(config, original), promise);
       waiting.push(promise.then(() => {}));
     }
     // Start independent batches together; the shared metadata limiter bounds API traffic.
@@ -215,10 +208,10 @@ export async function enrichPhotos(photos: Photo[]): Promise<{ photos: Photo[]; 
     let deadline: ReturnType<typeof setTimeout>;
     const assets = await Promise.race([resolveAssets(config, paths), new Promise<null>(resolve => {
       deadline = setTimeout(() => resolve(null), 2000);
-    })]).finally(() => clearTimeout(deadline)) ?? new Map(paths.map(original => [original, config.signature === signature ? cache.get(original)?.asset ?? null : null]));
+    })]).finally(() => clearTimeout(deadline)) ?? new Map(paths.map(original => [original, cache.get(assetKey(config, original))?.asset ?? null]));
     return { previewService: 'ready', photos: photos.map((photo, index) => {
       const asset = assets.get(paths[index]);
-      const mediaPending = (cache.get(paths[index])?.pendingUntil ?? 0) > Date.now();
+      const mediaPending = (cache.get(assetKey(config, paths[index]))?.pendingUntil ?? 0) > Date.now();
       return { ...photo, width: asset?.width ?? photo.width, height: asset?.height ?? photo.height,
         previewStatus: asset?.previewReady && !mediaPending ? 'ready' : 'pending' };
     }) };
@@ -255,7 +248,7 @@ export async function fetchImmichImage(relativePath: string, kind: 'thumbnail' |
   if (!response.ok) {
     await response.body?.cancel();
     if (response.status === 404) {
-      remember(original, asset, Date.now() + NEGATIVE_TTL);
+      remember(config, original, asset, Date.now() + NEGATIVE_TTL);
       throw new ImmichError(404, 'Photo saved. Immich has not made this preview available yet.');
     }
     throw unavailable();
@@ -270,9 +263,8 @@ export async function fetchImmichImage(relativePath: string, kind: 'thumbnail' |
   } });
 }
 
-async function performScan(config: Config, key: string): Promise<LibraryScanResult> {
-  lastScanAt = Date.now();
-  const generation = scanSignature;
+async function performScan(config: Config, key: string, state: ScanState): Promise<LibraryScanResult> {
+  state.lastAt = Date.now();
   const work = (async (): Promise<LibraryScanResult> => {
     try {
       let scoped = process.env.IMMICH_SCAN_MODE !== 'library';
@@ -288,20 +280,18 @@ async function performScan(config: Config, key: string): Promise<LibraryScanResu
       }
       if (response.status !== 204) throw unavailable();
       // Retry missing mappings promptly after the scan has been queued.
-      if (config.signature === signature) {
-        for (const [original, entry] of cache) if (!entry.asset?.previewReady) cache.delete(original);
-      }
+      for (const [original, entry] of cache) if (original.startsWith(`${config.signature}:`) && !entry.asset?.previewReady) cache.delete(original);
       return { state: 'queued', message: scoped ? 'Immich is scanning only the selected shared folder and will create previews for new photos.' : 'Immich is scanning the configured library and will create previews for new photos.' };
     } catch {
       return { state: 'unavailable', message: 'Immich could not start the scan. The host must provide an admin API key with library.update permission.' };
     }
   })();
-  scanInFlight = work;
+  state.inFlight = work;
   try {
     const result = await work;
-    if (generation === scanSignature) lastScanResult = result;
+    state.result = result;
     return result;
-  } finally { if (generation === scanSignature) scanInFlight = undefined; }
+  } finally { if (state.inFlight === work) state.inFlight = undefined; }
 }
 
 /** Scan only the configured library; repeated upload batches get one trailing scan. */
@@ -311,31 +301,25 @@ export async function requestLibraryScan(): Promise<LibraryScanResult> {
   if (!config) return { state: 'unconfigured', message: 'The host has not connected Immich previews yet.' };
   const key = readSettings().immichScanApiKey || config.key;
   const current = createHash('sha256').update(config.signature).update(key).update(process.env.IMMICH_SCAN_MODE || 'path').digest('hex');
-  if (current !== scanSignature) {
-    if (trailingScan) clearTimeout(trailingScan);
-    trailingScan = undefined;
-    scanInFlight = undefined;
-    lastScanAt = 0;
-    lastScanResult = undefined;
-    scanSignature = current;
-  }
-  const wait = Math.max(0, SCAN_COOLDOWN - (Date.now() - lastScanAt));
-  if (scanInFlight || wait > 0) {
-    if (!scanInFlight && lastScanResult?.state === 'unavailable') return lastScanResult;
-    if (!trailingScan) {
+  let state = scanStates.get(current);
+  if (!state) { state = { lastAt: 0 }; scanStates.set(current, state); }
+  const capturedState = state;
+  const wait = Math.max(0, SCAN_COOLDOWN - (Date.now() - state.lastAt));
+  if (state.inFlight || wait > 0) {
+    if (!state.inFlight && state.result?.state === 'unavailable') return state.result;
+    if (!state.trailing) {
       const captured = config;
-      trailingScan = setTimeout(() => {
-        trailingScan = undefined;
-        if (scanSignature !== current) return;
-        void performScan(captured, key).then((result) => {
+      state.trailing = setTimeout(() => {
+        capturedState.trailing = undefined;
+        void performScan(captured, key, capturedState).then((result) => {
           if (result.state === 'unavailable') console.warn('Gather: scheduled Immich library scan failed; check the admin scan API key and Immich connection.');
         });
       }, Math.max(wait, 100));
-      trailingScan.unref();
+      state.trailing.unref();
     }
     return { state: 'scheduled', message: 'A scan is scheduled shortly to include the latest uploads.' };
   }
-  return performScan(config, key);
+  return performScan(config, key, state);
 }
 
 // Search credentials and raw Immich records never leave the server. Every accepted
@@ -392,7 +376,7 @@ async function searchSharedAssets(photos: Photo[], options: import('../search').
         for (const value of result.assets.items) {
           const match = matchedAsset(value, config, requested);
           if (!match) continue;
-          if (config.signature === signature) remember(match.original, match.asset);
+          remember(config, match.original, match.asset);
           // Retain only what this feature needs, rather than whole EXIF/owner records.
           items.push({ id: match.asset.id, originalPath: match.original, ...(people ? { people: (value as Record<string, unknown>).people } : {}) });
         }

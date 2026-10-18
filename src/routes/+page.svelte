@@ -1,5 +1,8 @@
 <script lang="ts">
-  import { base } from '$app/paths';
+  import { base as appBase } from '$app/paths';
+  import { page } from '$app/stores';
+  import { collectionBase } from '$lib/collection-path';
+  $: base = collectionBase($page.url.pathname, appBase);
   import { mdiDownload } from '@mdi/js';
   import { sortPhotos } from '$lib/sort';
   import { mapConcurrent } from '$lib/async';
@@ -199,6 +202,7 @@
     try {
       if (/^https?:\/\//i.test(invite)) {
         const url = new URL(invite);
+        if (url.origin === location.origin && collectionBase(url.pathname, appBase) !== base) { location.assign(url.toString()); return; }
         invite = new URLSearchParams(url.hash.slice(1)).get('invite') || '';
       }
       const response = await fetch(`${base}/api/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: invite }) });
@@ -217,6 +221,7 @@
       const link = new URL(sharedLink.trim(), location.href);
       const shared = new URLSearchParams(link.hash.slice(1)).get('share');
       if (!shared) throw new Error('This link does not include an invitation. Ask your host for the collection’s shared link.');
+      if (link.origin === location.origin && collectionBase(link.pathname, appBase) !== base) { location.assign(link.toString()); return; }
       shareToken = shared;
       sharedLink = '';
       history.replaceState(null, '', `${location.pathname}${location.search}#share=${encodeURIComponent(shared)}`);

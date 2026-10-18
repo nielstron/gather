@@ -1,10 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { base } from '$app/paths';
+  import { base as appBase } from '$app/paths';
+  import { page } from '$app/stores';
+  import { collectionBase, collectionPath } from '$lib/collection-path';
+  $: base = collectionBase($page.url.pathname, appBase);
 
   type Settings = { collectionName: string; photoRoot: string; immichUrl: string; immichLibraryId: string; immichPhotoRoot: string; immichApiKey: string; immichScanApiKey: string };
   type Member = { id: string; name: string; folder: string; active: number; shared: number };
-  type Overview = { settings: Omit<Settings, 'immichApiKey' | 'immichScanApiKey'>; automaticImmichPath: boolean; allowedRoot: string; basePath: string; origin: string; previewKeyConfigured: boolean; scanKeyConfigured: boolean; sharedLinkActive: boolean; members: Member[] };
+  type Overview = { collectionId: string; collections: { id: string; name: string; photoRoot: string }[]; settings: Omit<Settings, 'immichApiKey' | 'immichScanApiKey'>; automaticImmichPath: boolean; allowedRoot: string; basePath: string; origin: string; previewKeyConfigured: boolean; scanKeyConfigured: boolean; sharedLinkActive: boolean; members: Member[] };
   let loading = true, authenticated = false, configured = false, busy = false;
   let password = '', setupToken = '', error = '', notice = '', generatedLink = '';
   let overview: Overview | undefined;
@@ -12,6 +15,8 @@
   let confirmFolderChange = false;
   let browserOpen = false, browsingFolder = '', directories: string[] = [];
   let memberName = '', memberFolder = '', copied = false;
+  let creatingCollection = false, newCollectionName = '', newCollectionRoot = '', inheritConnection = true;
+  let browserTarget: 'current' | 'new' = 'current';
   let tab: 'collection' | 'access' = 'collection';
   function folderLabel(folder: string) { return overview ? folder.slice(overview.allowedRoot.length).replace(/^\//, '') || 'Available folders' : folder; }
   $: changedFolder = !!overview && settings.photoRoot !== overview.settings.photoRoot;
@@ -32,6 +37,19 @@
       throw new Error(result.error || 'The request could not be completed.');
     }
     return result;
+  }
+
+  function switchCollection(id: string) {
+    if (dirty && !confirm('Discard unsaved changes and switch collections?')) return;
+    location.assign(`${collectionPath(appBase, id)}/admin`);
+  }
+
+  async function addCollection() {
+    busy = true; error = '';
+    try {
+      const result = await request('config', { action: 'create-collection', name: newCollectionName, photoRoot: newCollectionRoot, inheritConnection });
+      location.assign(result.adminUrl);
+    } catch (cause) { error = (cause as Error).message; busy = false; }
   }
 
   function apply(result: Overview) {
@@ -115,6 +133,14 @@
   {:else if overview}
     <main class="dashboard">
       <div class="intro"><div><span class="eyebrow">A place for everyone’s photos</span><h1>Your collection, your way.</h1><p>Choose what you share, then invite your people.</p></div><a class="button secondary" href={`${base}/`}>Open collection ↗</a></div>
+      <div class="collection-management"><label>Collection<select aria-label="Manage collection" value={overview.collectionId} on:change={(event) => switchCollection(event.currentTarget.value)}>{#each overview.collections as collection}<option value={collection.id}>{collection.name}</option>{/each}</select></label><button class="secondary" on:click={() => { creatingCollection = !creatingCollection; browserOpen = false; }}>+ New collection</button></div>
+      {#if creatingCollection}<form class="card new-collection" on:submit|preventDefault={addCollection}><h2>New collection</h2><p>Choose its own shared folder. Invitations and guest access are separate for every collection.</p>
+        <label>New collection name<input bind:value={newCollectionName} maxlength="120" required /></label>
+        <label>New collection folder<div class="input-row"><input aria-label="New collection folder" value={newCollectionRoot} readonly required placeholder="Choose a folder" /><button type="button" class="secondary" on:click={() => { browserTarget = 'new'; void browse(overview!.allowedRoot); }}>Browse folders</button></div></label>
+        {#if browserOpen && browserTarget === 'new'}<div class="folder-browser"><div class="folder-heading"><strong>{folderLabel(browsingFolder)}</strong><button type="button" class="quiet" on:click={() => browserOpen = false}>Close</button></div>{#if browsingFolder !== overview.allowedRoot}<button type="button" class="folder" on:click={() => browse(browsingFolder.slice(0, browsingFolder.lastIndexOf('/')))}>↑ Parent folder</button>{/if}{#each directories as directory}<button type="button" class="folder" on:click={() => browse(`${browsingFolder}/${directory}`)}>▱ {directory}<span>→</span></button>{/each}<button type="button" class="primary" on:click={() => { newCollectionRoot = browsingFolder; browserOpen = false; }}>Use this folder</button></div>{/if}
+        <label class="reuse-connection"><input type="checkbox" bind:checked={inheritConnection} />Use this collection’s Immich connection</label>
+        <div class="actions"><button class="primary" type="submit" disabled={busy || !newCollectionName.trim() || !newCollectionRoot}>{busy ? 'Creating…' : 'Create collection'}</button><button type="button" class="quiet" on:click={() => { creatingCollection = false; browserOpen = false; }}>Cancel</button></div>
+      </form>{/if}
       <nav aria-label="Settings sections"><button class:chosen={tab === 'collection'} on:click={() => selectTab('collection')}>Shared folder</button><button class:chosen={tab === 'access'} on:click={() => selectTab('access')}>People & invitations</button></nav>
       {#if error}<p class="alert error" role="alert">{error}</p>{/if}
       {#if notice}<p class="alert success" role="status">{notice}</p>{/if}
@@ -124,8 +150,8 @@
           <section class="card">
             <div class="section-heading"><span class="step">01</span><div><h2>The collection</h2><p>Everything inside this folder is visible to everyone you invite.</p></div></div>
             <label>Collection name<input bind:value={settings.collectionName} maxlength="120" required placeholder="A weekend worth remembering" /></label>
-            <div class="collection-choice"><span class="eyebrow">Sharing now</span><h2>{folderLabel(settings.photoRoot)}</h2><p>Your photos stay in this folder. Guests can browse and download everything inside it, and upload into their personal subfolder.</p><button type="button" class="secondary" on:click={() => browse(overview!.allowedRoot)}>Choose a different folder</button></div>
-            {#if browserOpen}<div class="folder-browser"><div class="folder-heading"><strong>{folderLabel(browsingFolder)}</strong><button type="button" class="quiet" on:click={() => browserOpen = false}>Close</button></div>{#if browsingFolder !== overview.allowedRoot}<button type="button" class="folder" on:click={() => browse(browsingFolder.slice(0, browsingFolder.lastIndexOf('/')))}>↑ Parent folder</button>{/if}{#each directories as directory}<button type="button" class="folder" on:click={() => browse(`${browsingFolder}/${directory}`)}>▱ {directory}<span>→</span></button>{/each}{#if !directories.length}<p class="muted">No subfolders.</p>{/if}<button type="button" class="primary" on:click={() => { settings.photoRoot = browsingFolder; browserOpen = false; }}>Use this folder</button></div>{/if}
+            <div class="collection-choice"><span class="eyebrow">Sharing now</span><h2>{folderLabel(settings.photoRoot)}</h2><p>Your photos stay in this folder. Guests can browse and download everything inside it, and upload into their personal subfolder.</p><button type="button" class="secondary" on:click={() => { browserTarget = 'current'; void browse(overview!.allowedRoot); }}>Choose a different folder</button></div>
+            {#if browserOpen && browserTarget === 'current'}<div class="folder-browser"><div class="folder-heading"><strong>{folderLabel(browsingFolder)}</strong><button type="button" class="quiet" on:click={() => browserOpen = false}>Close</button></div>{#if browsingFolder !== overview.allowedRoot}<button type="button" class="folder" on:click={() => browse(browsingFolder.slice(0, browsingFolder.lastIndexOf('/')))}>↑ Parent folder</button>{/if}{#each directories as directory}<button type="button" class="folder" on:click={() => browse(`${browsingFolder}/${directory}`)}>▱ {directory}<span>→</span></button>{/each}{#if !directories.length}<p class="muted">No subfolders.</p>{/if}<button type="button" class="primary" on:click={() => { settings.photoRoot = browsingFolder; browserOpen = false; }}>Use this folder</button></div>{/if}
             {#if changedFolder}<label class="confirmation"><input type="checkbox" bind:checked={confirmFolderChange} required /><span>I understand changing folders signs out all guests and removes their invitations. Photos are preserved.</span></label>{/if}
           </section>
           <details class="card integration"><summary>Server integration <span>Optional setup for previews</span></summary>
@@ -157,6 +183,8 @@
 </div>
 
 <style>
+  .collection-management{display:flex;align-items:end;gap:16px;margin-bottom:24px}.collection-management label{flex:1;margin:0}.collection-management select{display:block;width:100%;margin-top:8px;padding:11px;border:1px solid #d7e0d5;border-radius:7px;background:white;font:inherit;color:#405a46}.reuse-connection{display:flex;align-items:center;gap:10px;font-weight:400}.new-collection{margin-bottom:24px}@media(max-width:640px){.collection-management{align-items:stretch;flex-direction:column;gap:10px}}
+
   .collection-choice{background:#f7f8f3;border:1px solid #e4e9db;border-radius:10px;padding:24px;margin:24px 0 8px}.collection-choice h2{margin-top:12px}.collection-choice p{max-width:620px}.integration summary{cursor:pointer;font-size:14px;font-weight:600;list-style:none}.integration summary span{display:block;font-size:11px;font-weight:400;color:#899080;margin-top:5px}.integration[open] summary{margin-bottom:28px}
   .admin-shell{min-height:100vh;background:#f6f7f5;color:#263a35;font-family:Inter,system-ui,sans-serif}.admin-header{height:84px;display:flex;align-items:center;gap:26px;max-width:1160px;margin:auto;padding:0 32px;border-bottom:1px solid #dfe5df}.wordmark{font-size:32px;font-weight:750;letter-spacing:-1.8px;text-decoration:none;color:#233d34}.wordmark span{color:#bd7250}.admin-label{font-size:13px;border-left:1px solid #d6ded7;padding-left:26px;color:#687a72}.admin-header>.quiet{margin-left:auto}.sign-in{max-width:440px;margin:85px auto;padding:24px}.eyebrow{font-size:11px;letter-spacing:1.7px;text-transform:uppercase;font-weight:700;color:#7b806d}h1{font-size:38px;font-weight:550;letter-spacing:-1.4px;line-height:1.16;margin:15px 0}p{font-size:14px;line-height:1.7;color:#6b7770}h2{font-size:19px;letter-spacing:-.4px;font-weight:600;margin:0 0 6px}.sign-in form{margin-top:30px}.sign-in button.primary{width:100%;margin-top:8px}.back{display:block;margin-top:30px;font-size:13px;color:#567366}.dashboard{max-width:1000px;margin:auto;padding:45px 32px 70px}.intro{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:32px}.intro p{margin:12px 0 0}.intro h1{margin:10px 0}.button{display:inline-block;text-decoration:none}nav{display:flex;gap:26px;border-bottom:1px solid #d9e1d9;margin-bottom:28px}nav button{border:0;border-radius:0;background:none;padding:16px 0;color:#748078;font-weight:600}nav button.chosen{color:#294d3b;border-bottom:2px solid #294d3b}.card{background:white;border:1px solid #e0e6de;border-radius:14px;padding:30px;margin-bottom:20px}.section-heading{display:flex;align-items:flex-start;gap:16px;margin-bottom:24px}.section-heading p{margin:0;max-width:650px}.step{background:#f1f4ed;color:#60735b;border-radius:10px;min-width:38px;height:38px;display:grid;place-items:center;font-size:13px;font-weight:600}.section-heading>div{flex:1}label{display:block;font-size:12px;font-weight:650;color:#465c50;margin:20px 0}input:not([type=checkbox]){display:block;box-sizing:border-box;width:100%;background:#fbfcfa;border:1px solid #dce3d9;border-radius:7px;padding:12px 13px;margin:8px 0 0;font-size:13px;font-weight:400;color:#31473b;outline:none;min-width:0}input:focus{border-color:#63896a;box-shadow:0 0 0 3px #eaf0e8}small{display:block;font-size:11px;font-weight:400;line-height:1.6;color:#7a857c;margin-top:7px}button,.button{font-family:inherit;font-size:12px;font-weight:600;border:1px solid transparent;border-radius:7px;padding:11px 16px;cursor:pointer;white-space:nowrap}button:disabled{opacity:.5;cursor:wait}.primary{background:#315740;color:white;border-color:#315740}.secondary{background:white;border-color:#d7e0d5;color:#405a46}.quiet{background:transparent;color:#627260}.danger{background:transparent;color:#a14b37}.input-row{display:flex;align-items:center;gap:10px}.input-row input{margin-top:0}.input-row{margin-top:8px}.two-columns{display:grid;grid-template-columns:1fr 1fr;gap:24px}.two-columns label{margin-top:6px}.optional{font-size:10px;font-weight:400;color:#859080}.note{padding:14px 17px;background:#f6f5ee;border-radius:8px;color:#81816d;font-size:12px;line-height:1.65;margin:8px 0 20px}.actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.save-bar{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:4px 0 14px}.save-bar p{font-size:12px}.deployment{font-size:11px;text-align:center;color:#8a928a}.deployment a{color:inherit}.alert{padding:13px 17px;border-radius:8px;margin:0 0 20px;font-size:13px}.error{color:#9b4432;background:#fbedE8}.success{color:#375c41;background:#e8f1e6}.folder-browser{border:1px solid #dce5d7;border-radius:10px;padding:16px;background:#fafcf8;margin:14px 0}.folder-heading{display:flex;align-items:center;justify-content:space-between;font-size:12px;overflow-wrap:anywhere;margin-bottom:8px}.folder{display:flex;justify-content:space-between;width:100%;text-align:left;background:white;border-bottom:1px solid #eff2eb;border-radius:0;font-weight:400;color:#436344}.folder-browser>.primary{margin-top:16px}.confirmation{display:flex;gap:12px;align-items:flex-start;padding:15px;background:#fff4e4;line-height:1.6;color:#8a652f}.confirmation input{margin-top:3px}.muted{font-size:12px;color:#818b81}.status{font-size:10px;text-transform:uppercase;letter-spacing:1px;border:1px solid #e0e5dc;padding:5px 9px;border-radius:20px;color:#889180}.status.active{background:#edf5e8;color:#5f7e4b;border-color:#deead6}.invitation{background:#f0f5eb;border-color:#d7e5ca}.invitation a{display:inline-block;color:#54734d;font-size:12px;margin-top:15px}.member{display:flex;align-items:center;gap:14px;padding:19px 0;border-bottom:1px solid #edf0e9}.member:last-child{border:0}.avatar{display:grid;place-items:center;width:36px;height:36px;background:#f0ede2;color:#8c8264;border-radius:50%;font-size:13px}.member-name{flex:1;font-size:13px}.member-name small{margin-top:3px}.empty{padding:35px 0;text-align:center;color:#8b9687;font-size:13px}@media(max-width:640px){.admin-header{padding:0 20px;height:70px;gap:16px}.admin-label{padding-left:16px;font-size:11px}.dashboard{padding:28px 18px}.intro{display:block}.intro>.button{margin-top:18px}h1{font-size:30px}.card{padding:22px 18px}.two-columns{grid-template-columns:1fr;gap:0}.input-row{flex-wrap:wrap}.input-row input{flex:1 1 200px}.save-bar{align-items:flex-start}.save-bar p{margin:0}.section-heading{gap:11px}.section-heading .step{min-width:30px;height:30px}.member{gap:8px;flex-wrap:wrap}.member-name{min-width:150px}.member button{padding:7px 8px}.sign-in{margin:45px auto}}
 </style>
