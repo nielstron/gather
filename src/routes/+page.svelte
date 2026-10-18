@@ -7,6 +7,7 @@
   import { Button, Badge } from '@immich/ui';
   import justifiedLayout from 'justified-layout';
   import PhotoSwipe from 'photoswipe';
+  import { installProgressiveImages } from '$lib/progressive-viewer';
   import Thumbnail from '$lib/components/Thumbnail.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import type { Member, Photo, PhotoList } from '$lib/types';
@@ -95,7 +96,7 @@
     ) }));
   }
 
-  function mediaUrl(photo: Photo, kind: 'thumbnail' | 'preview' | 'original') {
+  function mediaUrl(photo: Photo, kind: 'thumbnail' | 'preview' | 'fullsize' | 'original') {
     return `${base}/api/media/${photo.id}?kind=${kind}&v=${encodeURIComponent(photo.revision || photo.modifiedAt)}`;
   }
 
@@ -268,11 +269,13 @@
     }
     const viewable = sortedPhotos.filter((item) => item.previewStatus === 'ready' && !imageErrors.has(item.id));
     viewer = new PhotoSwipe({
-      dataSource: viewable.map((item) => ({ src: mediaUrl(item, 'preview'), msrc: mediaUrl(item, 'thumbnail'), width: item.width || 1600, height: item.height || 1200, alt: item.name })),
+      dataSource: viewable.map((item) => ({ src: mediaUrl(item, 'preview'), msrc: mediaUrl(item, 'thumbnail'), thumbnailSrc: mediaUrl(item, 'thumbnail'), fullSrc: mediaUrl(item, 'fullsize'), width: item.width || 1600, height: item.height || 1200, alt: item.name })),
       index: viewable.findIndex((item) => item.id === photo.id), bgOpacity: 0.97,
-      showHideAnimationType: 'fade', errorMsg: 'Immich has not finished this preview. You can still download the original.',
+      preload: [1, 1], showHideAnimationType: 'fade', errorMsg: 'Immich has not finished this preview. You can still download the original.',
     });
     const activeViewer = viewer;
+    installProgressiveImages(activeViewer);
+    activeViewer.on('destroy', () => { if (viewer === activeViewer) viewer = undefined; });
     activeViewer.on('uiRegister', () => {
       activeViewer.ui?.registerElement({
         name: 'download-original', order: 11, isButton: true, tagName: 'a', title: 'Download original',

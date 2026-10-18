@@ -5,6 +5,7 @@
 </script>
 
 <script lang="ts">
+  import { cacheThumbnail, retainThumbnail, type ThumbnailLease } from '$lib/thumbnail-cache';
   import { onMount, createEventDispatcher } from 'svelte';
   export let src: string;
   export let alt: string;
@@ -12,6 +13,7 @@
   const dispatch = createEventDispatcher<{ error: void }>();
   let element: HTMLImageElement;
   let objectUrl: string | undefined;
+  let lease: ThumbnailLease | undefined;
   let visible = eager;
   let mounted = false;
   let requested = '';
@@ -21,19 +23,22 @@
   $: if (mounted && visible && requested !== src) {
     requested = src;
     controller?.abort();
-    if (objectUrl) { URL.revokeObjectURL(objectUrl); objectUrl = undefined; }
+    lease?.release(); lease = undefined; objectUrl = undefined;
     controller = new AbortController();
     const current = controller;
     const source = src;
     void imageRequests(async () => {
       if (current.signal.aborted) return;
+      const cached = retainThumbnail(source);
+      if (cached) { lease = cached; objectUrl = cached.url; return; }
       try {
         const response = await fetch(source, { signal: AbortSignal.any([current.signal, AbortSignal.timeout(15000)]) });
         if (!response.ok) throw new Error('Preview unavailable');
         const blob = await response.blob();
         if (current.signal.aborted || !mounted) return;
-        if (objectUrl) URL.revokeObjectURL(objectUrl);
-        objectUrl = URL.createObjectURL(blob);
+        lease?.release();
+        lease = cacheThumbnail(source, blob);
+        objectUrl = lease.url;
       } catch { if (!current.signal.aborted && mounted) dispatch('error'); }
     });
   }
@@ -47,7 +52,7 @@
     return () => {
       mounted = false;
       controller?.abort(); observer?.disconnect();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      lease?.release();
     };
   });
 </script>

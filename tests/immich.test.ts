@@ -300,3 +300,46 @@ test('a slow Immich metadata response does not hold the gallery open', async () 
   assert.equal(ready.photos[0].previewStatus, 'ready');
   assert.equal(requests.length, 1, 'the background lookup is shared instead of restarted');
 });
+
+test('full-size images follow the same asset original redirect without exposing the API key', async () => {
+  configure();
+  handler = (req, res) => {
+    if(req.url === '/api/search/metadata') json(res,[asset()]);
+    else if(req.url?.endsWith('size=fullsize')) res.writeHead(302,{location:'original?'}).end();
+    else { assert.equal(req.url,`/api/assets/${ASSET}/original`); res.writeHead(200,{'content-type':'image/jpeg'}).end('full-size image'); }
+  };
+  const response = await fetchImmichImage('alice/summer.jpg','fullsize');
+  assert.equal(await response.text(),'full-size image');
+  assert.equal(response.headers.get('cache-control'),'private, max-age=60');
+  assert.equal(response.headers.get('x-api-key'),null);
+  assert.equal(requests.length,3);
+});
+
+test('full-size conversion may fall back to the same asset preview', async () => {
+  configure();
+  handler = (req,res) => {
+    if(req.url === '/api/search/metadata') json(res,[asset()]);
+    else if(req.url?.endsWith('size=fullsize')) res.writeHead(302,{location:`/api/assets/${ASSET}/thumbnail?size=preview`}).end();
+    else { assert.ok(req.url?.endsWith('size=preview')); res.writeHead(200,{'content-type':'image/webp'}).end('converted preview'); }
+  };
+  assert.equal(await (await fetchImmichImage('alice/summer.jpg','fullsize')).text(),'converted preview');
+});
+
+test('full-size redirects cannot send credentials to another origin or asset', async () => {
+  for(const location of ['https://other.invalid/secret',`/api/assets/33333333-3333-4333-8333-333333333333/original`]){
+    configure();
+    handler=(req,res)=>{ if(req.url === '/api/search/metadata')json(res,[asset()]);else res.writeHead(302,{location}).end(); };
+    await assert.rejects(fetchImmichImage('alice/summer.jpg','fullsize'),error=>error instanceof ImmichError && error.status===503);
+    assert.equal(requests.length,2);
+  }
+});
+
+test('older Immich versions without full-size support keep serving a preview', async () => {
+  configure();
+  handler = (req,res) => {
+    if(req.url === '/api/search/metadata')json(res,[asset()]);
+    else if(req.url?.endsWith('size=fullsize'))res.writeHead(400).end();
+    else res.writeHead(200,{'content-type':'image/jpeg'}).end('preview');
+  };
+  assert.equal(await (await fetchImmichImage('alice/summer.jpg','fullsize')).text(),'preview');
+});

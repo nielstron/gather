@@ -74,12 +74,13 @@ function remember(key: string, asset: Asset | null, pendingUntil?: number): void
 }
 
 async function request(config: Config, endpoint: string, init: RequestInit = {}, signal?: AbortSignal): Promise<Response> {
-  const timeout = AbortSignal.timeout(init.method === 'POST' ? 8_000 : 20_000);
+  const fullSize = endpoint.startsWith('/assets/') && (endpoint.endsWith('/original') || endpoint.includes('size=fullsize'));
+  const timeout = AbortSignal.timeout(init.method === 'POST' ? 8_000 : fullSize ? 90_000 : 20_000);
   try {
     return await fetch(`${config.url}/api${endpoint}`, {
       ...init,
       headers: { ...init.headers, 'x-api-key': config.key },
-      redirect: 'error',
+      redirect: init.redirect || 'error',
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
   } catch {
@@ -226,14 +227,31 @@ export async function enrichPhotos(photos: Photo[]): Promise<{ photos: Photo[]; 
   }
 }
 
-export async function fetchImmichImage(relativePath: string, kind: 'thumbnail' | 'preview', signal?: AbortSignal): Promise<Response> {
+export async function fetchImmichImage(relativePath: string, kind: 'thumbnail' | 'preview' | 'fullsize', signal?: AbortSignal): Promise<Response> {
   const config = configuration();
   if (!config) throw new ImmichError(503, 'The host has not connected Immich previews yet.');
-  if (!['thumbnail', 'preview'].includes(kind)) throw new ImmichError(400, 'Invalid image size.');
+  if (!['thumbnail', 'preview', 'fullsize'].includes(kind)) throw new ImmichError(400, 'Invalid image size.');
   const original = originalPath(config, relativePath);
   const asset = (await resolveAssets(config, [original])).get(original);
   if (!asset) throw new ImmichError(404, 'Photo saved. Its preview is waiting for Immich to index this folder.');
-  const response = await request(config, `/assets/${asset.id}/thumbnail?size=${kind}`, {}, signal);
+  let response = await request(config, `/assets/${asset.id}/thumbnail?size=${kind}`, kind === 'fullsize' ? { redirect: 'manual' } : {}, signal);
+  if (kind === 'fullsize' && [301, 302, 303, 307, 308].includes(response.status)) {
+    const source = `${config.url}/api/assets/${asset.id}/thumbnail?size=fullsize`;
+    const location = response.headers.get('location');
+    await response.body?.cancel();
+    if (!location) throw unavailable();
+    const target = new URL(location, source);
+    const original = new URL(`${config.url}/api/assets/${asset.id}/original`);
+    const preview = new URL(`${config.url}/api/assets/${asset.id}/thumbnail?size=preview`);
+    if (target.origin !== original.origin || target.hash || target.username || target.password) throw unavailable();
+    if (target.pathname === original.pathname && (!target.search || target.search === '?')) response = await request(config, `/assets/${asset.id}/original`, {}, signal);
+    else if (target.href === preview.href) response = await request(config, `/assets/${asset.id}/thumbnail?size=preview`, {}, signal);
+    else throw unavailable();
+  }
+  if (kind === 'fullsize' && response.status === 400) {
+    await response.body?.cancel();
+    response = await request(config, `/assets/${asset.id}/thumbnail?size=preview`, {}, signal);
+  }
   if (!response.ok) {
     await response.body?.cancel();
     if (response.status === 404) {

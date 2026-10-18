@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, unlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
@@ -320,4 +320,29 @@ test('gallery requests can use the last snapshot while one shared refresh runs',
   assert.equal(immediate.some(photo => photo.name === 'new-external.png'), false);
   const refreshed = await media.scanPhotos([]);
   assert.equal(refreshed.some(photo => photo.name === 'new-external.png'), true);
+});
+
+
+test('full-size rendering revalidates originals instead of trusting an old thumbnail snapshot', async () => {
+  const filename = path.join(photoRoot, 'bob', 'replaced-file.png');
+  writeFileSync(filename, png);
+  media.invalidatePhotos();
+  await media.scanPhotos([]);
+  await unlink(filename);
+  symlinkSync(path.join(directory, 'outside', 'secret.png'), filename);
+  const route = await import('../src/routes/api/media/[id]/+server');
+  const url = new URL('http://localhost:5173/api/media/test?kind=fullsize');
+  const response = await route.GET({params:{id:media.encodeId('bob/replaced-file.png')},url,request:new Request(url)} as never);
+  assert.equal(response.status,404);
+});
+
+test('full-resolution web images stream the exact original without an Immich download permission', async () => {
+  const route = await import('../src/routes/api/media/[id]/+server');
+  const url = new URL('http://localhost:5173/api/media/test?kind=fullsize');
+  const response = await route.GET({params:{id:media.encodeId('alice/holiday.png')},url,request:new Request(url)} as never);
+  assert.equal(response.status,200);
+  assert.equal(response.headers.get('content-type'),'image/png');
+  assert.equal(response.headers.get('content-disposition'),null);
+  assert.equal(response.headers.get('cache-control'),'private, max-age=60');
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()),png);
 });

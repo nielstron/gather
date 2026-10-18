@@ -75,11 +75,13 @@ test.beforeAll(async () => {
         });
         response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ assets: { items, nextCursor: null } })); return;
       }
-      const id = request.url?.match(/^\/api\/assets\/([^/]+)\/thumbnail\?size=(thumbnail|preview)$/)?.[1];
+      const id = request.url?.match(/^\/api\/assets\/([^/]+)\/thumbnail\?size=(thumbnail|preview|fullsize)$/)?.[1];
       if (id && images.has(id)) {
         const gate = thumbnailGate;
         if (gate) { heldThumbnails++; peakHeldThumbnails = Math.max(peakHeldThumbnails, heldThumbnails); try { await gate; } finally { heldThumbnails--; } }
-        response.writeHead(200, { 'content-type': 'image/jpeg' }).end(images.get(id)); return; }
+        const size = new URL(request.url!, 'http://localhost').searchParams.get('size');
+        const image = await sharp(images.get(id)!).resize({width:size==='thumbnail'?200:600,withoutEnlargement:true}).jpeg().toBuffer();
+        response.writeHead(200, { 'content-type': 'image/jpeg' }).end(image); return; }
       response.writeHead(404).end();
     } catch { response.writeHead(500).end(); }
   });
@@ -499,4 +501,90 @@ test('uploading an existing file under a new name is visibly skipped', async ({ 
   await page.locator('input[type="file"]').setInputFiles({name:'renamed-weekend.jpg',mimeType:'image/jpeg',buffer:payload});
   await expect(page.locator('.upload-panel')).toContainText('Already in collection · skipped');
   expect((await readdir(path.join(directory, 'photos', 'duplicate-uploads'))).filter(name=>!name.startsWith('.'))).toEqual([]);
+});
+
+
+test('the viewer reuses cached thumbnails on opening and swiping, then upgrades on zoom without moving the image', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invitation = auth.createMember('Progressive viewer', 'progressive-viewer');
+  await page.setViewportSize({width:390,height:844});
+  await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
+  const photo = (name: string) => page.locator('.photo-open').filter({has:page.locator(`img[alt="${name}"]`)});
+  for(const name of ['weekend-2.jpg','weekend-0.jpg']) {
+    await photo(name).scrollIntoViewIfNeeded();
+    await expect.poll(()=>photo(name).locator('img').evaluate((image:HTMLImageElement)=>image.naturalWidth)).toBeGreaterThan(0);
+  }
+  const firstThumbnail = await photo('weekend-0.jpg').locator('img').getAttribute('src');
+  const nextThumbnail = await photo('weekend-2.jpg').locator('img').getAttribute('src');
+  let releasePreview!: () => void, releaseFull!: () => void;
+  const previewGate = new Promise<void>(resolve=>{releasePreview=resolve;});
+  const fullGate = new Promise<void>(resolve=>{releaseFull=resolve;});
+  let fullRequests=0;
+  await page.route('**/api/media/**',async route=>{
+    const kind=new URL(route.request().url()).searchParams.get('kind');
+    if(kind==='preview')await previewGate;
+    if(kind==='fullsize'){fullRequests++;await fullGate;}
+    await route.continue().catch(()=>{});
+  });
+  const active = page.locator('.pswp__item[aria-hidden="false"] img.pswp__img:not(.pswp__img--placeholder)');
+  try {
+    await photo('weekend-0.jpg').click();
+    await expect(active).toHaveAttribute('src',firstThumbnail!);
+    await expect.poll(()=>active.evaluate((image:HTMLImageElement)=>image.naturalWidth)).toBeGreaterThan(0);
+    const thumbnailWidth=await active.evaluate((image:HTMLImageElement)=>image.naturalWidth);
+    expect(fullRequests).toBe(0);
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('.pswp__photo-caption')).toContainText('weekend-2.jpg');
+    await expect(active).toHaveAttribute('src',nextThumbnail!);
+    releasePreview();
+    await expect(active).toHaveAttribute('data-resolution','preview');
+    await page.keyboard.press('ArrowLeft');
+    await expect(page.locator('.pswp__photo-caption')).toContainText('weekend-0.jpg');
+    await expect(active).toHaveAttribute('data-resolution','preview');
+    const previewSource=await active.getAttribute('src');
+    await expect.poll(()=>active.evaluate((image:HTMLImageElement)=>image.naturalWidth)).toBeGreaterThan(thumbnailWidth);
+    const previewWidth=await active.evaluate((image:HTMLImageElement)=>image.naturalWidth);
+    expect(previewWidth).toBeGreaterThan(thumbnailWidth);
+    await page.getByRole('button',{name:'Zoom',exact:true}).click();
+    await expect.poll(()=>fullRequests).toBe(1);
+    await expect(active).toHaveAttribute('src',previewSource!);
+    // Wait for the user's zoom animation before testing the resolution-only swap.
+    await page.waitForTimeout(400);
+    const transform=await active.evaluate(image=>(image.parentElement as HTMLElement).style.transform);
+    releaseFull();
+    await expect(active).toHaveAttribute('data-resolution','fullsize');
+    await expect.poll(()=>active.evaluate((image:HTMLImageElement)=>image.naturalWidth)).toBeGreaterThan(previewWidth);
+    expect(await active.evaluate(image=>(image.parentElement as HTMLElement).style.transform)).toBe(transform);
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.pswp')).toHaveCount(0);
+    await expect.poll(()=>photo('weekend-0.jpg').locator('img').evaluate((image:HTMLImageElement)=>image.naturalWidth)).toBeGreaterThan(0);
+  } finally { releasePreview();releaseFull();await page.unrouteAll({behavior:'wait'}); }
+});
+
+test('failed preview and full-size upgrades keep the cached thumbnail visible',async ({page})=>{
+  const auth=await import('../src/lib/server/auth');
+  const invitation=auth.createMember('Viewer fallback','viewer-fallback');
+  await page.setViewportSize({width:390,height:844});
+  await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
+  const photo=page.locator('.photo-open').filter({has:page.locator('img[alt="weekend-0.jpg"]')});
+  await photo.scrollIntoViewIfNeeded();
+  await expect.poll(()=>photo.locator('img').evaluate((image:HTMLImageElement)=>image.naturalWidth)).toBeGreaterThan(0);
+  const source=await photo.locator('img').getAttribute('src');
+  let failures=0, fullFailed=false;
+  await page.route('**/api/media/**',route=>{
+    if(['preview','fullsize'].includes(new URL(route.request().url()).searchParams.get('kind')||'')){
+      failures++; if(new URL(route.request().url()).searchParams.get('kind')==='fullsize')fullFailed=true;
+      return route.fulfill({status:503,body:'Unavailable'});
+    }
+    return route.continue();
+  });
+  await photo.click();
+  const active=page.locator('.pswp__item[aria-hidden="false"] img.pswp__img:not(.pswp__img--placeholder)');
+  await expect(active).toHaveAttribute('src',source!);
+  await page.getByRole('button',{name:'Zoom',exact:true}).click();
+  await expect.poll(()=>fullFailed).toBe(true);
+  expect(failures).toBeGreaterThan(1);
+  await expect(active).toHaveAttribute('data-resolution','thumbnail');
+  await expect.poll(()=>active.evaluate((image:HTMLImageElement)=>image.naturalWidth)).toBeGreaterThan(0);
+  await expect(page.locator('.pswp__error-msg')).toHaveCount(0);
 });
