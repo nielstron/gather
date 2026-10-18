@@ -17,7 +17,7 @@ export const GET: RequestHandler = async ({ url }) => {
     }
     const folder = url.searchParams.get('folder');
     const query = (url.searchParams.get('q') || '').toLowerCase().slice(0, 200);
-    const matching = all.filter((photo) => (folder === null || photo.folder === folder) && (!query || `${photo.name} ${photo.owner}`.toLowerCase().includes(query)));
+    const matching = all.filter((photo) => (folder === null || photo.folder.toLowerCase() === folder.toLowerCase()) && (!query || `${photo.name} ${photo.owner}`.toLowerCase().includes(query)));
     const offset = Math.max(0, Number.parseInt(url.searchParams.get('offset') || '0', 10) || 0);
     const limit = Math.min(300, Math.max(1, Number.parseInt(url.searchParams.get('limit') || '150', 10) || 150));
     const { photos, previewService } = await enrichPhotos(matching.slice(offset, offset + limit));

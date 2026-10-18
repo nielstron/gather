@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { chmodSync, lstatSync, mkdirSync, rmdirSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, readdirSync, rmdirSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { config } from './config';
@@ -90,7 +90,7 @@ function validateFolder(folder: string) {
 
 function findMember(folder: string): Member {
   validateFolder(folder);
-  const member = db().prepare('SELECT id, name, folder FROM members WHERE folder = ?').get(folder) as Member | undefined;
+  const member = db().prepare('SELECT id, name, folder FROM members WHERE folder = ? COLLATE NOCASE').get(folder) as Member | undefined;
   if (!member) throw new Error(`No member exists for folder "${folder}".`);
   return member;
 }
@@ -103,10 +103,15 @@ export function listMembers(): Member[] {
 export function createMember(name: string, folder: string): { member: Member; token: string } {
   validateFolder(folder);
   name = validateName(name);
-  if (db().prepare('SELECT id FROM members WHERE folder = ?').get(folder)) {
+  if (db().prepare('SELECT id FROM members WHERE folder = ? COLLATE NOCASE').get(folder)) {
     throw new Error(`Folder "${folder}" already has a member. Create a replacement invitation for this member instead.`);
   }
   mkdirSync(config.photoRoot, { recursive: true });
+  // Match the filesystem's spelling while treating capitalization as equivalent.
+  // Names alone never select a folder: this applies only to the admin's folder input.
+  const matches = readdirSync(config.photoRoot).filter(entry => entry.toLowerCase() === folder.toLowerCase());
+  if (matches.length > 1) throw new Error('Multiple folders differ only in capitalization. Combine or rename those folders before assigning a personal invitation.');
+  folder = matches[0] || folder;
   const destination = path.join(config.photoRoot, folder);
   try {
     mkdirSync(destination, { mode: 0o750 });
@@ -207,10 +212,11 @@ export function joinCollection(token: string, name: string): { member: Member; s
     if (!root.isDirectory() || root.isSymbolicLink()) throw new Error('The photo root must be a real directory.');
     const slug = name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
       .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32).replace(/-+$/, '') || 'friend';
+    const existingFolders = new Set(readdirSync(config.photoRoot).map(entry => entry.toLowerCase()));
     let folder = '';
     for (let attempt = 0; attempt < 10; attempt++) {
       const candidate = attempt === 0 ? slug : `${slug}-${randomUUID().slice(0, 8)}`;
-      if (db().prepare('SELECT id FROM members WHERE folder = ?').get(candidate)) continue;
+      if (existingFolders.has(candidate.toLowerCase()) || db().prepare('SELECT id FROM members WHERE folder = ? COLLATE NOCASE').get(candidate)) continue;
       try { mkdirSync(path.join(config.photoRoot, candidate), { mode: 0o750 }); folder = candidate; break; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
     }

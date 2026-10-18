@@ -206,3 +206,29 @@ test('a personal invitation for a former group guest survives shared-link revoca
   assert.deepEqual(auth.getSession(session.sessionToken), guest.member);
   assert.equal((auth.accessOverview().members as { folder: string; shared: number }[]).find(member => member.folder === guest.member.folder)?.shared, 0);
 });
+
+
+test('personal invitations match existing folders and members regardless of capitalization', () => {
+  mkdirSync(path.join(directory, 'photos', 'ExistingPhotos'));
+  writeFileSync(path.join(directory, 'photos', 'ExistingPhotos', 'memory.jpg'), 'original');
+  const invitation = auth.createMember('Existing owner', 'existingphotos');
+  assert.equal(invitation.member.folder, 'ExistingPhotos');
+  assert.throws(() => auth.createMember('Another owner', 'EXISTINGPHOTOS'), /already has a member/);
+  assert.equal(auth.getSession(auth.exchangeInvite(invitation.token)!.sessionToken)?.folder, 'ExistingPhotos');
+  assert.equal(readFileSync(path.join(directory, 'photos', 'ExistingPhotos', 'memory.jpg'), 'utf8'), 'original');
+});
+
+
+test('ambiguous existing folders are never silently merged or claimed', () => {
+  mkdirSync(path.join(directory, 'photos', 'CaseDuplicate'));
+  mkdirSync(path.join(directory, 'photos', 'caseduplicate'));
+  assert.throws(() => auth.createMember('Ambiguous owner', 'CASEDUPLICATE'), /Multiple folders differ/);
+});
+
+
+test('shared-link joins avoid existing folders regardless of capitalization', () => {
+  mkdirSync(path.join(directory, 'photos', 'UppercaseGuest'));
+  const token = auth.createShareLink();
+  const joined = auth.joinCollection(token, 'UppercaseGuest');
+  assert.notEqual(joined.member.folder.toLowerCase(), 'uppercaseguest');
+});
