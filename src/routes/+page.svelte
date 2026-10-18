@@ -7,11 +7,12 @@
   import { Button, Badge } from '@immich/ui';
   import justifiedLayout from 'justified-layout';
   import PhotoSwipe from 'photoswipe';
+  import Thumbnail from '$lib/components/Thumbnail.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import type { Member, Photo, PhotoList } from '$lib/types';
 
   export let data: { user: Member | null; members: Member[]; collectionName: string; maxUploadBytes: number; immichConfigured: boolean };
-  type Upload = { id: string; file: File; progress: number; status: 'waiting' | 'uploading' | 'retrying' | 'done' | 'error' | 'cancelled'; attempts?: number; error?: string; xhr?: XMLHttpRequest };
+  type Upload = { id: string; file: File; progress: number; status: 'waiting' | 'uploading' | 'retrying' | 'done' | 'error' | 'cancelled'; attempts?: number; duplicate?: boolean; error?: string; xhr?: XMLHttpRequest };
   let photos: Photo[] = [];
   let folders: PhotoList['folders'] = [];
   let total = 0;
@@ -47,6 +48,7 @@
   let dragTimer: ReturnType<typeof setTimeout>;
   let searchTimer: ReturnType<typeof setTimeout>;
   let fetchNumber = 0;
+  let galleryRequest: AbortController | undefined;
   let pendingPhoto: Photo | null = null;
   let pendingDialog: HTMLDialogElement;
   let viewer: PhotoSwipe | undefined;
@@ -113,7 +115,9 @@
     const baseOffset = append ? existingPhotos.length : 0;
     loading = true;
     error = '';
+    galleryRequest?.abort();
     const controller = new AbortController();
+    galleryRequest = controller;
     const timeout = setTimeout(() => controller.abort(), 30_000);
     try {
       const offsets = Array.from({ length: Math.ceil(targetCount / 300) }, (_, index) => index * 300);
@@ -142,6 +146,7 @@
         : cause instanceof Error ? cause.message : 'Unable to load your photos.';
     } finally {
       clearTimeout(timeout);
+      if (galleryRequest === controller) galleryRequest = undefined;
       if (request === fetchNumber) loading = false;
     }
   }
@@ -348,9 +353,9 @@
           xhr.upload.onprogress = (event) => { touch(); if (event.lengthComputable) updateUpload(item.id, { progress: Math.round(event.loaded / event.total * 100) }); };
           xhr.onprogress = touch;
           xhr.onload = () => {
-            let body: { error?: string } = {};
+            let body: { error?: string; photo?: { duplicate?: boolean } } = {};
             try { body = JSON.parse(xhr.responseText); } catch { /* Give a useful error for proxy responses. */ }
-            if (xhr.status >= 200 && xhr.status < 300) updateUpload(item.id, { status: 'done', progress: 100, xhr: undefined });
+            if (xhr.status >= 200 && xhr.status < 300) updateUpload(item.id, { status: 'done', duplicate: !!body.photo?.duplicate, progress: 100, xhr: undefined });
             else if ([408, 425, 429].includes(xhr.status) || xhr.status >= 500) {
               const header = xhr.getResponseHeader('Retry-After');
               const retryAfter = header ? (/^\d+$/.test(header) ? Number(header) * 1000 : Date.parse(header) - Date.now()) : 0;
@@ -405,7 +410,7 @@
         void loadPhotos();
       }
     }, 7_000);
-    return () => { disposed = true; for (const timer of retryTimers.values()) clearTimeout(timer); retryTimers.clear(); clearInterval(interval); clearTimeout(searchTimer); clearTimeout(dragTimer); viewer?.destroy(); uploads.forEach((item) => item.xhr?.abort()); };
+    return () => { disposed = true; galleryRequest?.abort(); for (const timer of retryTimers.values()) clearTimeout(timer); retryTimers.clear(); clearInterval(interval); clearTimeout(searchTimer); clearTimeout(dragTimer); viewer?.destroy(); uploads.forEach((item) => item.xhr?.abort()); };
   });
 </script>
 
@@ -505,7 +510,7 @@
             {@const box = group.layout.boxes[index]}
             {#if box}<article class:selected={selected.has(photo.id)} class:pending={photo.previewStatus !== 'ready' || imageErrors.has(photo.id)} class="photo-tile" style:left={`${box.left}px`} style:top={`${box.top}px`} style:width={`${box.width}px`} style:height={`${box.height}px`}>
               <button class="photo-open" on:click={() => openPhoto(photo)} aria-label={`Open ${photo.name}, shared by ${photo.owner}`} title={`${photo.name} · ${photo.owner}`}>
-                {#if photo.previewStatus === 'ready' && !imageErrors.has(photo.id)}<img src={mediaUrl(photo, 'thumbnail')} alt={photo.name} loading={(photoIndexes.get(photo.id) || 0) < 12 ? 'eager' : 'lazy'} decoding="async" fetchpriority={(photoIndexes.get(photo.id) || 0) < 4 ? 'high' : 'auto'} on:error={() => { imageErrors = new Set([...imageErrors, photo.id]); }} />{:else}<div class="pending-preview"><Icon name={photo.previewStatus === 'pending' ? 'clock' : 'image'} size={24} /><span>{photo.previewStatus === 'pending' ? 'Processing' : 'No preview'}</span></div>{/if}
+                {#if photo.previewStatus === 'ready' && !imageErrors.has(photo.id)}<Thumbnail src={mediaUrl(photo, 'thumbnail')} alt={photo.name} eager={(photoIndexes.get(photo.id) || 0) < 4} on:error={() => { imageErrors = new Set([...imageErrors, photo.id]); }} />{:else}<div class="pending-preview"><Icon name={photo.previewStatus === 'pending' ? 'clock' : 'image'} size={24} /><span>{photo.previewStatus === 'pending' ? 'Processing' : 'No preview'}</span></div>{/if}
                 <span class="photo-gradient"></span><span class="photo-owner">{photo.owner}</span>
               </button>
               <label class="photo-checkbox" class:checked={selected.has(photo.id)}><input type="checkbox" checked={selected.has(photo.id)} on:change={() => toggleSelect(photo.id)} aria-label={`Select ${photo.name}`} /><span><Icon name="check" size={15} /></span></label>
@@ -536,6 +541,6 @@
     <button class="text-button profile-sign-out" on:click={signOut} disabled={savingProfile}><Icon name="logout" size={17} />Sign out</button>
   </dialog>
   {#if dragging}<div class="drop-overlay"><div><span class="drop-icon"><Icon name="upload" size={42} /></span><h2>Drop your moments here</h2><p>Uploading to <strong>{data.user.name}’s folder</strong></p><span>Everyone in the collection can view and download them.</span></div></div>{/if}
-  {#if uploads.length}<section class="upload-panel" bind:clientHeight={uploadPanelHeight} aria-label="Upload progress" aria-live="polite"><header><span class="upload-panel-icon"><Icon name={activeUploads ? 'upload' : 'check'} size={19} /></span><div><strong>{activeUploads ? `Uploading ${uploads.length - completedUploads} ${uploads.length - completedUploads === 1 ? 'photo' : 'photos'}` : `${completedUploads} of ${uploads.length} uploaded`}</strong><span><Icon name="folder" size={12} /> Folder: {data.user.folder}/</span></div><button class="icon-button" on:click={() => { uploadPanelOpen = !uploadPanelOpen; }} aria-label={uploadPanelOpen ? 'Minimize uploads' : 'Expand uploads'}><span>{uploadPanelOpen ? '−' : '+'}</span></button>{#if !activeUploads}<button class="icon-button" on:click={() => { uploads = []; }} aria-label="Close uploads"><Icon name="close" size={17} /></button>{/if}</header>{#if uploadPanelOpen}<div class="upload-list">{#each uploads as item (item.id)}<div class="upload-row"><span class="upload-file-icon"><Icon name="image" size={21} /></span><div class="upload-item-body"><strong>{item.file.name}</strong><span class:error-text={item.status === 'error'}>{item.status === 'done' ? 'Saved · Immich preview processing' : item.status === 'uploading' ? `${item.progress}% · ${bytes(item.file.size)}` : item.status === 'error' || item.status === 'retrying' ? item.error : item.status === 'cancelled' ? 'Cancelled' : 'Waiting to upload'}</span>{#if item.status === 'uploading'}<div class="upload-progress"><div style:width={`${item.progress}%`}></div></div>{/if}</div>{#if item.status === 'done'}<span class="upload-success"><Icon name="check" size={18} /></span>{:else if item.status === 'error' || item.status === 'cancelled'}<button class="icon-button" on:click={() => retryUpload(item)} disabled={item.file.size > data.maxUploadBytes} aria-label={`Retry ${item.file.name}`}><Icon name="refresh" size={16} /></button>{:else}<button class="icon-button" on:click={() => cancelUpload(item)} aria-label={`Cancel ${item.file.name}`}><Icon name="close" size={16} /></button>{/if}</div>{/each}</div><footer>Shared with everyone in this collection.</footer>{/if}</section>{/if}
+  {#if uploads.length}<section class="upload-panel" bind:clientHeight={uploadPanelHeight} aria-label="Upload progress" aria-live="polite"><header><span class="upload-panel-icon"><Icon name={activeUploads ? 'upload' : 'check'} size={19} /></span><div><strong>{activeUploads ? `Uploading ${uploads.length - completedUploads} ${uploads.length - completedUploads === 1 ? 'photo' : 'photos'}` : `${completedUploads} of ${uploads.length} finished${uploads.some(item => item.duplicate) ? ` · ${uploads.filter(item => item.duplicate).length} skipped` : ''}`}</strong><span><Icon name="folder" size={12} /> Folder: {data.user.folder}/</span></div><button class="icon-button" on:click={() => { uploadPanelOpen = !uploadPanelOpen; }} aria-label={uploadPanelOpen ? 'Minimize uploads' : 'Expand uploads'}><span>{uploadPanelOpen ? '−' : '+'}</span></button>{#if !activeUploads}<button class="icon-button" on:click={() => { uploads = []; }} aria-label="Close uploads"><Icon name="close" size={17} /></button>{/if}</header>{#if uploadPanelOpen}<div class="upload-list">{#each uploads as item (item.id)}<div class="upload-row"><span class="upload-file-icon"><Icon name="image" size={21} /></span><div class="upload-item-body"><strong>{item.file.name}</strong><span class:error-text={item.status === 'error'}>{item.status === 'done' ? item.duplicate ? 'Already in collection · skipped' : 'Saved · Immich preview processing' : item.status === 'uploading' ? `${item.progress}% · ${bytes(item.file.size)}` : item.status === 'error' || item.status === 'retrying' ? item.error : item.status === 'cancelled' ? 'Cancelled' : 'Waiting to upload'}</span>{#if item.status === 'uploading'}<div class="upload-progress"><div style:width={`${item.progress}%`}></div></div>{/if}</div>{#if item.status === 'done'}<span class="upload-success"><Icon name="check" size={18} /></span>{:else if item.status === 'error' || item.status === 'cancelled'}<button class="icon-button" on:click={() => retryUpload(item)} disabled={item.file.size > data.maxUploadBytes} aria-label={`Retry ${item.file.name}`}><Icon name="refresh" size={16} /></button>{:else}<button class="icon-button" on:click={() => cancelUpload(item)} aria-label={`Cancel ${item.file.name}`}><Icon name="close" size={16} /></button>{/if}</div>{/each}</div><footer>Shared with everyone in this collection.</footer>{/if}</section>{/if}
   <dialog class="pending-dialog" bind:this={pendingDialog}><button class="icon-button dialog-close" on:click={() => pendingDialog.close()} aria-label="Close photo details"><Icon name="close" /></button>{#if pendingPhoto}<div class="dialog-image"><Icon name="image" size={52} /></div><Badge size="small" color="secondary">Original safely stored</Badge><h2>{pendingPhoto.name}</h2><p>{pendingPhoto.previewStatus === 'pending' ? 'Immich is preparing this photo’s preview. The original is already yours to enjoy.' : 'The Immich preview is currently unavailable. You can still download the original photo.'}</p><div class="dialog-metadata"><span>Shared by {pendingPhoto.owner}</span><span>{bytes(pendingPhoto.bytes)}</span></div><a class="primary-button button-link" href={mediaUrl(pendingPhoto, 'original')} download={pendingPhoto.name}><Icon name="download" size={18} />Download original</a>{/if}</dialog>
 {/if}

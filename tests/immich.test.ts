@@ -286,3 +286,17 @@ test('independent metadata batches overlap, share pending lookups, and respect t
   assert.ok(peak > 1, 'independent batches must overlap');
   assert.ok(peak <= 8, 'the shared API limit includes all batches and callers');
 });
+
+test('a slow Immich metadata response does not hold the gallery open', async () => {
+  configure();
+  let release!: () => void;
+  handler = (_req, res) => { release = () => json(res, [asset()]); };
+  const start = Date.now();
+  const first = await enrichPhotos([photo()]);
+  assert.ok(Date.now() - start < 3000, 'gallery has a short overall metadata deadline');
+  assert.equal(first.photos[0].previewStatus, 'pending');
+  release();
+  const ready = await enrichPhotos([photo()]);
+  assert.equal(ready.photos[0].previewStatus, 'ready');
+  assert.equal(requests.length, 1, 'the background lookup is shared instead of restarted');
+});

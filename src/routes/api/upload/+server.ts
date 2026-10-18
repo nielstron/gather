@@ -30,13 +30,13 @@ export const POST: RequestHandler = async ({ request, locals }) => {
       const photo = await saveUpload(locals.user!, name, request.body, request.signal);
       if (scope) writeUploadReceipt(scope, fingerprint, photo);
       // Processing continues even when the browser loses the response.
-      void requestLibraryScan().then((result) => {
+      if (!photo.duplicate) void requestLibraryScan().then((result) => {
         if (result.state === 'unavailable') console.warn('Gather: automatic Immich scan unavailable; check the connection and scan API key.');
       }).catch(() => console.warn('Gather: automatic Immich scan failed.'));
       return photo;
     })();
     if (scope) pending.set(scope, { fingerprint, promise: work });
-    try { return json({ photo: await work }, { status: 201 }); }
+    try { const photo = await work; return json({ photo }, { status: photo.duplicate ? 200 : 201 }); }
     finally { if (scope && pending.get(scope)?.promise === work) pending.delete(scope); }
   } catch (error) { return apiError(error); }
 };

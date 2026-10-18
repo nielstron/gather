@@ -1,4 +1,4 @@
-import { constants, createWriteStream } from 'node:fs';
+import { constants, createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, readdir, lstat, open, link, unlink } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
@@ -7,7 +7,8 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import sharp from 'sharp';
 import { config } from './config';
-import { runConcurrentQueue } from '../async';
+import { readFileChecksum, writeFileChecksum } from './auth';
+import { runConcurrentQueue, mapConcurrent } from '../async';
 import type { Member, Photo } from '../types';
 
 const extensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif', '.tif', '.tiff', '.heic', '.heif']);
@@ -76,15 +77,18 @@ async function photoInfo(relative: string, members: Member[], dimensions = { wid
   return { id: encodeId(relative), revision, name: path.basename(relative), folder, owner: members.find((member) => member.folder === folder)?.name || folder || 'Shared folder', width: dimensions.width, height: dimensions.height, bytes: stat.size, modifiedAt: stat.mtime.toISOString(), previewStatus: 'pending' };
 }
 
-export function invalidatePhotos() { generation++; scanCache = undefined; }
+export function invalidatePhotos() { generation++; if (scanCache) scanCache.time = 0; }
 
-export async function scanPhotos(members: Member[]): Promise<Photo[]> {
+export async function scanPhotos(members: Member[], allowStale = false): Promise<Photo[]> {
   const attribute = (photos: Photo[]) => {
     const names = new Map(members.map(member => [member.folder, member.name]));
     return photos.map(photo => ({ ...photo, owner: names.get(photo.folder) || photo.folder || 'Shared folder' }));
   };
   if (scanCache && scanCache.root === config.photoRoot && Date.now() - scanCache.time < 15_000) return attribute(scanCache.photos);
-  if (scanning && scanningRoot === config.photoRoot) return attribute(await scanning);
+  if (scanning && scanningRoot === config.photoRoot) {
+    if (allowStale && scanCache?.root === config.photoRoot) return attribute(scanCache.photos);
+    return attribute(await scanning);
+  }
   scanningRoot = config.photoRoot;
   const startedGeneration = generation;
   scanning = (async () => {
@@ -116,6 +120,10 @@ export async function scanPhotos(members: Member[]): Promise<Photo[]> {
     return photos;
   })();
   const work = scanning;
+  if (allowStale && scanCache?.root === config.photoRoot) {
+    void work.then(() => { if (scanning === work) scanning = undefined; }, () => { if (scanning === work) scanning = undefined; });
+    return attribute(scanCache.photos);
+  }
   try { return attribute(await work); } finally { if (scanning === work) scanning = undefined; }
 }
 
@@ -127,6 +135,36 @@ export function validateFilename(name: string) {
 }
 
 const activeUploads = new Map<string, number>();
+const committingContent = new Map<string, Promise<Photo>>();
+
+async function duplicatePhoto(checksum: string, size: number, signal?: AbortSignal): Promise<Photo | undefined> {
+  const candidates = (await scanPhotos([])).filter(photo => photo.bytes === size);
+  let found: Photo | undefined;
+  await mapConcurrent(candidates, 2, async candidate => {
+    if (found) return;
+    try {
+      const relative = decodeId(candidate.id);
+      const info = await photoInfo(relative, []);
+      if (!info || info.bytes !== size) return;
+      let digest = readFileChecksum(relative, info.revision!);
+      if (!digest) {
+        const file = await openPhoto(candidate.id);
+        const hash = createHash('sha256');
+        const stream = file.handle.createReadStream({ signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000) });
+        try { for await (const chunk of stream) hash.update(chunk); }
+        finally { stream.destroy(); await file.handle.close().catch(() => {}); }
+        const after = await photoInfo(relative, []);
+        if (!after || after.revision !== info.revision) return;
+        digest = hash.digest('hex');
+        writeFileChecksum(relative, info.revision!, digest);
+      }
+      if (digest === checksum) found = { ...info, duplicate: true };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof MediaError && error.status === 404)) throw error;
+    }
+  });
+  return found;
+}
 let uploadCount = 0;
 
 export async function saveUpload(member: Member, name: string, body: ReadableStream<Uint8Array> | null, signal?: AbortSignal): Promise<Photo> {
@@ -136,42 +174,67 @@ export async function saveUpload(member: Member, name: string, body: ReadableStr
   activeUploads.set(member.id, (activeUploads.get(member.id) || 0) + 1);
   uploadCount++;
   let temporary: string | undefined;
+  let remoteTemporary: string | undefined;
   let size = 0;
   try {
     const folder = await checkedDirectory([member.folder]);
-    temporary = path.join(folder, `.gather-incoming-${randomUUID()}`);
+    const staging = path.join(config.dataRoot, 'incoming');
+    await mkdir(staging, { recursive: true, mode: 0o700 });
+    temporary = path.join(staging, `.gather-incoming-${randomUUID()}`);
+    const checksum = createHash('sha256');
     const limiter = new Transform({ transform(chunk, _encoding, callback) {
       size += chunk.length;
+      checksum.update(chunk);
       callback(size > config.maxUploadBytes ? new MediaError(413, `Each photo must be smaller than ${config.maxUploadBytes / 1024 / 1024} MB`) : null, chunk);
     } });
     await pipeline(Readable.fromWeb(body as import('node:stream/web').ReadableStream<Uint8Array>), limiter, createWriteStream(temporary, { flags: 'wx', mode: 0o640 }), { signal });
     if (!size) throw new MediaError(400, 'The file is empty');
-    let dimensions = { width: 4, height: 3 };
-    try {
-      const info = await sharp(temporary, { limitInputPixels: 80_000_000 }).metadata();
-      if (!formats.has(info.format || '') || !info.width || !info.height) throw new Error('Unsupported image');
-      if (info.width * info.height > 80_000_000) throw new Error('Image too large');
-      const rotate = info.orientation && info.orientation >= 5;
-      dimensions = { width: rotate ? info.height : info.width, height: rotate ? info.width : info.height };
-      // Fully decode to reject truncated files; this does not create a thumbnail.
-      await sharp(temporary, { limitInputPixels: 80_000_000, failOn: 'warning' }).stats();
-    } catch {
-      throw new MediaError(415, 'This server could not validate the image. Try JPEG or PNG; HEIC support depends on the server decoder.');
-    }
-    await checkedDirectory([member.folder]);
-    let saved = '';
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const extension = path.extname(name);
-      const candidate = attempt === 0 ? name : `${name.slice(0, -extension.length)}-${randomUUID().slice(0, 8)}${extension}`;
-      try { await link(temporary, path.join(folder, candidate)); saved = candidate; break; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
-    }
-    if (!saved) throw new MediaError(409, 'Could not choose a unique filename. Please retry.');
-    invalidatePhotos();
-    const photo = await photoInfo(`${member.folder}/${saved}`, [member], dimensions);
-    if (!photo) throw new MediaError(500, 'Photo saved but could not be inspected');
-    return photo;
+    const digest = checksum.digest('hex');
+    const contentKey = JSON.stringify([config.photoRoot, digest]);
+    const running = committingContent.get(contentKey);
+    if (running) return { ...await running, duplicate: true };
+    const commit = (async () => {
+      const existing = await duplicatePhoto(digest, size, signal);
+      if (existing) return existing;
+      let dimensions = { width: 4, height: 3 };
+      try {
+        const info = await sharp(temporary!, { limitInputPixels: 80_000_000 }).metadata();
+        if (!formats.has(info.format || '') || !info.width || !info.height) throw new Error('Unsupported image');
+        if (info.width * info.height > 80_000_000) throw new Error('Image too large');
+        const rotate = info.orientation && info.orientation >= 5;
+        dimensions = { width: rotate ? info.height : info.width, height: rotate ? info.width : info.height };
+        // Fully decode to reject truncated files; this does not create a thumbnail.
+        await sharp(temporary!, { limitInputPixels: 80_000_000, failOn: 'warning' }).stats();
+      } catch {
+        throw new MediaError(415, 'This server could not validate the image. Try JPEG or PNG; HEIC support depends on the server decoder.');
+      }
+      await checkedDirectory([member.folder]);
+      remoteTemporary = path.join(folder, `.gather-incoming-${randomUUID()}`);
+      await pipeline(createReadStream(temporary!), createWriteStream(remoteTemporary, { flags: 'wx', mode: 0o640 }), { signal });
+      let saved = '';
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const extension = path.extname(name);
+        const candidate = attempt === 0 ? name : `${name.slice(0, -extension.length)}-${randomUUID().slice(0, 8)}${extension}`;
+        try { await link(remoteTemporary, path.join(folder, candidate)); saved = candidate; break; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+      }
+      if (!saved) throw new MediaError(409, 'Could not choose a unique filename. Please retry.');
+      await unlink(remoteTemporary); remoteTemporary = undefined;
+      invalidatePhotos();
+      const photo = await photoInfo(`${member.folder}/${saved}`, [member], dimensions);
+      if (!photo) throw new MediaError(500, 'Photo saved but could not be inspected');
+      if (scanCache?.root === config.photoRoot) {
+        scanCache.photos = [...scanCache.photos.filter(existing => existing.id !== photo.id), photo];
+        scanCache.ids.add(photo.id);
+      }
+      writeFileChecksum(`${member.folder}/${saved}`, photo.revision!, digest);
+      return photo;
+    })();
+    committingContent.set(contentKey, commit);
+    try { return await commit; }
+    finally { if (committingContent.get(contentKey) === commit) committingContent.delete(contentKey); }
   } finally {
+    if (remoteTemporary) await unlink(remoteTemporary).catch(() => {});
     if (temporary) await unlink(temporary).catch(() => {});
     const count = (activeUploads.get(member.id) || 1) - 1;
     if (count) activeUploads.set(member.id, count); else activeUploads.delete(member.id);

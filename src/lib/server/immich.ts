@@ -211,7 +211,10 @@ export async function enrichPhotos(photos: Photo[]): Promise<{ photos: Photo[]; 
     const config = configuration();
     if (!config) return { photos: photos.map((photo) => ({ ...photo, previewStatus: 'unavailable' })), previewService: 'unconfigured' };
     const paths = photos.map((photo) => originalPath(config, decodePhotoId(photo.id)));
-    const assets = await resolveAssets(config, paths);
+    let deadline: ReturnType<typeof setTimeout>;
+    const assets = await Promise.race([resolveAssets(config, paths), new Promise<null>(resolve => {
+      deadline = setTimeout(() => resolve(null), 2000);
+    })]).finally(() => clearTimeout(deadline)) ?? new Map(paths.map(original => [original, config.signature === signature ? cache.get(original)?.asset ?? null : null]));
     return { previewService: 'ready', photos: photos.map((photo, index) => {
       const asset = assets.get(paths[index]);
       const mediaPending = (cache.get(paths[index])?.pendingUntil ?? 0) > Date.now();

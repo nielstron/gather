@@ -32,6 +32,8 @@ function hasStatus(status: number) {
 
 async function assertNoTemporaryFiles(folder = 'alice') {
   assert.equal((await readdir(path.join(photoRoot, folder))).some((name) => name.startsWith('.gather-incoming-')), false);
+  const incoming = path.join(directory, 'data', 'incoming');
+  assert.equal((await readdir(incoming).catch(() => [])).length, 0);
 }
 
 test('uploads preserve original bytes, use the member folder, and never overwrite duplicate names', async () => {
@@ -272,4 +274,50 @@ test('authenticated previews retain private caching while originals and rejected
   const denied = await request('image/webp', false);
   assert.equal(denied.status, 401);
   assert.equal(denied.headers.get('cache-control'), 'private, no-store');
+});
+
+
+test('identical contents are skipped across filenames and members, while changed contents are kept', async () => {
+  const first = await media.saveUpload(alice, 'renamed-memory.png', body(png));
+  assert.equal(first.duplicate, true);
+  assert.equal(first.id, media.encodeId('alice/holiday.png'));
+  const otherOwner = await media.saveUpload(bob, 'another-name.png', body(png));
+  assert.equal(otherOwner.duplicate, true);
+  assert.equal(otherOwner.id, first.id);
+  assert.deepEqual(await readdir(path.join(photoRoot, 'bob')), []);
+  const unique = await sharp({ create: { width: 27, height: 23, channels: 3, background: 'green' } }).png().toBuffer();
+  const together = await Promise.all([
+    media.saveUpload(alice, 'race-one.png', body(unique)),
+    media.saveUpload(bob, 'race-two.png', body(unique))
+  ]);
+  assert.equal(together[0].id, together[1].id);
+  assert.equal(together.filter(photo => photo.duplicate).length, 1);
+  await assertNoTemporaryFiles();
+});
+
+test('existing unindexed files are compared by contents and hash caches detect modifications', async () => {
+  const external = await sharp({ create: { width: 29, height: 23, channels: 3, background: 'yellow' } }).png().toBuffer();
+  const target = path.join(photoRoot, 'bob', 'external.png');
+  writeFileSync(target, external);
+  media.invalidatePhotos();
+  const duplicate = await media.saveUpload(alice, 'external-renamed.png', body(external));
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.id, media.encodeId('bob/external.png'));
+  writeFileSync(target, bluePng);
+  const newOriginal = await media.saveUpload(alice, 'external-renamed.png', body(external));
+  assert.equal(newOriginal.duplicate, undefined);
+  assert.equal(newOriginal.folder, alice.folder);
+  await assertNoTemporaryFiles();
+});
+
+test('gallery requests can use the last snapshot while one shared refresh runs', async () => {
+  const before = await media.scanPhotos([]);
+  const filename = path.join(photoRoot, 'bob', 'new-external.png');
+  writeFileSync(filename, png);
+  media.invalidatePhotos();
+  const immediate = await media.scanPhotos([], true);
+  assert.equal(immediate.length, before.length);
+  assert.equal(immediate.some(photo => photo.name === 'new-external.png'), false);
+  const refreshed = await media.scanPhotos([]);
+  assert.equal(refreshed.some(photo => photo.name === 'new-external.png'), true);
 });

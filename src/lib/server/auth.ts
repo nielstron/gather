@@ -36,6 +36,11 @@ function db() {
     );
     CREATE INDEX IF NOT EXISTS sessions_member_id ON sessions(member_id);
     CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
+    CREATE TABLE IF NOT EXISTS file_checksums (
+      scope TEXT PRIMARY KEY,
+      revision TEXT NOT NULL,
+      checksum TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS upload_receipts (
       scope TEXT PRIMARY KEY,
       fingerprint TEXT NOT NULL,
@@ -281,4 +286,15 @@ export function writeUploadReceipt(scope: string, fingerprint: string, photo: Ph
     db().prepare('DELETE FROM upload_receipts WHERE created_at < ?').run(Date.now() - receiptLifetime);
     db().prepare('INSERT OR REPLACE INTO upload_receipts (scope, fingerprint, photo, created_at) VALUES (?, ?, ?, ?)').run(scope, fingerprint, JSON.stringify(photo), Date.now());
   })();
+}
+
+
+export function readFileChecksum(relative: string, revision: string): string | null {
+  const scope = hash(JSON.stringify([config.photoRoot, relative]));
+  return (db().prepare('SELECT checksum FROM file_checksums WHERE scope = ? AND revision = ?').get(scope, revision) as { checksum: string } | undefined)?.checksum ?? null;
+}
+
+export function writeFileChecksum(relative: string, revision: string, checksum: string) {
+  const scope = hash(JSON.stringify([config.photoRoot, relative]));
+  db().prepare('INSERT OR REPLACE INTO file_checksums (scope, revision, checksum) VALUES (?, ?, ?)').run(scope, revision, checksum);
 }

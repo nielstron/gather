@@ -1,7 +1,7 @@
 import { sortPhotos } from '$lib/sort';
 import { json } from '@sveltejs/kit';
 import { listMembers } from '$lib/server/auth';
-import { scanPhotos, invalidatePhotos } from '$lib/server/media';
+import { scanPhotos, invalidatePhotos, MediaError } from '$lib/server/media';
 import { enrichPhotos } from '$lib/server/immich';
 import { apiError } from '$lib/server/http';
 import type { RequestHandler } from './$types';
@@ -10,7 +10,10 @@ export const GET: RequestHandler = async ({ url }) => {
   try {
     if (url.searchParams.get('refresh') === '1') invalidatePhotos();
     const members = listMembers();
-    const all = await scanPhotos(members);
+    let deadline: ReturnType<typeof setTimeout>;
+    const all = await Promise.race([scanPhotos(members, true), new Promise<never>((_, reject) => {
+      deadline = setTimeout(() => reject(new MediaError(503, 'The photo storage is taking too long to respond. Please try again.')), 3000);
+    })]).finally(() => clearTimeout(deadline));
     const folders = new Map(members.map((member) => [member.folder, { folder: member.folder, name: member.name, count: 0 }]));
     for (const photo of all) {
       if (!folders.has(photo.folder)) folders.set(photo.folder, { folder: photo.folder, name: photo.owner, count: 0 });

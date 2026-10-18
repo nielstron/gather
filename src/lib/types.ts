@@ -1,5 +1,6 @@
 export type Member = { id: string; name: string; folder: string };
 export type Photo = {
+  duplicate?: boolean;
   revision?: string;
   id: string;
   name: string;

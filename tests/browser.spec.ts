@@ -14,6 +14,8 @@ let appLog = '';
 const indexed = new Map<string, string>();
 const images = new Map<string, Buffer>();
 const dimensions = new Map<string, { width: number; height: number }>();
+let thumbnailGate: Promise<void> | undefined;
+let heldThumbnails = 0, peakHeldThumbnails = 0;
 const libraryId = 'cb34e6a2-f3ec-4567-bbbb-000000000001';
 
 async function listen(server: Server) {
@@ -74,7 +76,10 @@ test.beforeAll(async () => {
         response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ assets: { items, nextCursor: null } })); return;
       }
       const id = request.url?.match(/^\/api\/assets\/([^/]+)\/thumbnail\?size=(thumbnail|preview)$/)?.[1];
-      if (id && images.has(id)) { response.writeHead(200, { 'content-type': 'image/jpeg' }).end(images.get(id)); return; }
+      if (id && images.has(id)) {
+        const gate = thumbnailGate;
+        if (gate) { heldThumbnails++; peakHeldThumbnails = Math.max(peakHeldThumbnails, heldThumbnails); try { await gate; } finally { heldThumbnails--; } }
+        response.writeHead(200, { 'content-type': 'image/jpeg' }).end(images.get(id)); return; }
       response.writeHead(404).end();
     } catch { response.writeHead(500).end(); }
   });
@@ -115,8 +120,8 @@ test('shared link, editable names, private gallery, Immich scan, uploads and ori
   await page.getByLabel('Your name', { exact: true }).fill('Alice');
   await page.getByRole('button', { name: 'Join collection', exact: true }).click();
   await expect(page.getByRole('button', { name: 'All photos', exact: false }).first()).toBeVisible();
-  await expect(page.locator('img[src*="/api/media/"]')).toHaveCount(3);
-  await expect.poll(() => page.locator('img[src*="/api/media/"]').evaluateAll((images) => images.every((image) => (image as HTMLImageElement).naturalWidth > 0))).toBe(true);
+  await expect(page.locator('.photo-tile img')).toHaveCount(3);
+  await expect.poll(() => page.locator('.photo-tile img').evaluateAll((images) => images.every((image) => (image as HTMLImageElement).naturalWidth > 0))).toBe(true);
   await expect(page.locator('.timeline-group')).toHaveCount(2);
   await page.getByLabel('Sort photos').selectOption('name');
   await expect(page.locator('.timeline-group')).toHaveCount(1);
@@ -186,7 +191,7 @@ test('shared link, editable names, private gallery, Immich scan, uploads and ori
   expect(login.status()).toBe(200);
   const bobFolder = (await login.json()).user.folder;
   expect(bobFolder).not.toBe('bob');
-  const bobUpload = await bob.request.post(`${origin}${basePath}/api/upload?folder=alice`, { headers: { origin, 'x-filename': 'bobs-photo.png', 'content-type': 'application/octet-stream' }, data: payload });
+  const bobUpload = await bob.request.post(`${origin}${basePath}/api/upload?folder=alice`, { headers: { origin, 'x-filename': 'bobs-photo.png', 'content-type': 'application/octet-stream' }, data: await sharp({ create: { width: 320, height: 240, channels: 3, background: '#9dbdb0' } }).png().toBuffer() });
   expect(bobUpload.status()).toBe(201);
   expect((await bobUpload.json()).photo.folder).toBe(bobFolder);
   expect((await bob.request.get(`${origin}${basePath}/api/media/${uploaded.id}?kind=original`)).status()).toBe(200);
@@ -301,7 +306,7 @@ test('two uploads start together instead of waiting for each other', async ({ pa
   const invitation = auth.createMember('Parallel uploads', 'parallel-uploads');
   await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
   await expect(page.locator('.photo-tile').first()).toBeVisible();
-  const payload = await sharp({ create: { width: 20, height: 20, channels: 3, background: '#476a81' } }).png().toBuffer();
+  const payload = await sharp({ create: { width: 20, height: 20, channels: 3, background: `#${createHash('sha256').update(test.info().title).digest('hex').slice(0,6)}` } }).png().toBuffer();
   let started = 0;
   let release!: () => void;
   const bothStarted = new Promise<void>(resolve => { release = resolve; });
@@ -312,7 +317,7 @@ test('two uploads start together instead of waiting for each other', async ({ pa
   });
   await page.locator('input[type="file"]').setInputFiles([
     { name: 'parallel-one.png', mimeType: 'image/png', buffer: payload },
-    { name: 'parallel-two.png', mimeType: 'image/png', buffer: payload }
+    { name: 'parallel-two.png', mimeType: 'image/png', buffer: await sharp({create:{width:21,height:20,channels:3,background:'#476a81'}}).png().toBuffer() }
   ]);
   await expect.poll(() => started).toBe(2);
   await expect.poll(async () => {
@@ -326,7 +331,7 @@ test('interrupted uploads retry automatically and a lost success response does n
   const invitation = auth.createMember('Retry uploads', 'retry-uploads');
   await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
   await expect(page.locator('.photo-tile').first()).toBeVisible();
-  const payload = await sharp({ create: { width: 20, height: 20, channels: 3, background: '#476a81' } }).png().toBuffer();
+  const payload = await sharp({ create: { width: 20, height: 20, channels: 3, background: `#${createHash('sha256').update(test.info().title).digest('hex').slice(0,6)}` } }).png().toBuffer();
   const identifiers: string[] = [];
   let attempts = 0;
   await page.route('**/api/upload', async route => {
@@ -352,8 +357,8 @@ test('interrupted uploads retry automatically and a lost success response does n
   expect(collision.status()).toBe(409);
   const duplicateHeaders = { origin, 'x-filename': 'concurrent-retry.png', 'x-upload-id': 'concurrent-retry-identifier', 'x-upload-size': String(payload.length), 'content-type': 'image/png' };
   const concurrent = await Promise.all([0, 1].map(() => page.request.post(`${origin}${basePath}/api/upload`, { headers: duplicateHeaders, data: payload })));
-  expect(concurrent.map(response => response.status()).sort()).toEqual([200, 201]);
-  expect((await readdir(path.join(directory, 'photos', 'retry-uploads'))).filter(name => name.startsWith('concurrent-retry'))).toEqual(['concurrent-retry.png']);
+  expect(concurrent.map(response => response.status()).sort()).toEqual([200, 200]);
+  expect((await readdir(path.join(directory, 'photos', 'retry-uploads'))).filter(name => name.startsWith('concurrent-retry'))).toEqual([]);
 });
 
 test('a queued automatic retry can be cancelled', async ({ page }) => {
@@ -380,7 +385,7 @@ test('offline uploads resume when the connection returns', async ({ page, contex
   const invitation = auth.createMember('Offline retry', 'offline-retry');
   await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
   await expect(page.locator('.photo-tile').first()).toBeVisible();
-  const payload = await sharp({ create: { width: 20, height: 20, channels: 3, background: '#476a81' } }).png().toBuffer();
+  const payload = await sharp({ create: { width: 20, height: 20, channels: 3, background: `#${createHash('sha256').update(test.info().title).digest('hex').slice(0,6)}` } }).png().toBuffer();
   await context.setOffline(true);
   await page.locator('input[type="file"]').setInputFiles({ name: 'offline-retry.png', mimeType: 'image/png', buffer: payload });
   await expect(page.locator('.upload-panel')).toContainText('Waiting for connection');
@@ -421,7 +426,7 @@ test('a stalled transfer retries after its inactivity timeout', async ({ page })
   await page.clock.install();
   await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
   await expect(page.locator('.photo-tile').first()).toBeVisible();
-  const payload = await sharp({ create: { width: 20, height: 20, channels: 3, background: '#476a81' } }).png().toBuffer();
+  const payload = await sharp({ create: { width: 20, height: 20, channels: 3, background: `#${createHash('sha256').update(test.info().title).digest('hex').slice(0,6)}` } }).png().toBuffer();
   let attempts = 0;
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
@@ -437,4 +442,61 @@ test('a stalled transfer retries after its inactivity timeout', async ({ page })
   await page.clock.fastForward(1001);
   await expect(page.locator('.upload-panel')).toContainText('Saved · Immich preview processing');
   expect(attempts).toBe(2);
+});
+
+
+test('search remains responsive while image connections are stalled', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invitation = auth.createMember('Responsive search', 'responsive-search');
+  await indexFiles();
+  let release!: () => void;
+  thumbnailGate = new Promise<void>(resolve => { release = resolve; });
+  peakHeldThumbnails = 0;
+  try {
+    await page.goto(`${origin}${basePath}/#invite=${invitation.token}`, {waitUntil:'domcontentloaded'});
+    await expect(page.locator('.photo-tile').first()).toBeVisible();
+    await expect.poll(() => heldThumbnails).toBe(2);
+    const started = Date.now();
+    const response = page.waitForResponse(r => r.url().includes('/api/photos?') && r.url().includes('q=no-such-photo'));
+    await page.getByLabel('Search filenames').fill('no-such-photo');
+    expect((await response).status()).toBe(200);
+    expect(Date.now() - started).toBeLessThan(2500);
+    expect(peakHeldThumbnails).toBeLessThanOrEqual(2);
+    await expect(page.locator('.photo-tile')).toHaveCount(0);
+  } finally { thumbnailGate = undefined; release(); }
+});
+
+test('new searches abort previous searches instead of leaving them queued', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invitation = auth.createMember('Cancel search', 'cancel-search');
+  await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
+  await expect(page.locator('.photo-tile').first()).toBeVisible();
+  let release!: () => void, started!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const requested = new Promise<void>(resolve => { started = resolve; });
+  let aborted = false;
+  page.on('requestfailed', request => { if(request.url().includes('q=old-search')) aborted = true; });
+  await page.route('**/api/photos?*', async route => {
+    if (!route.request().url().includes('q=old-search')) { await route.continue(); return; }
+    started(); await gate; await route.abort().catch(() => {});
+  });
+  try {
+    await page.getByLabel('Search filenames').fill('old-search');
+    await requested;
+    await page.getByLabel('Search filenames').fill('weekend');
+    await expect(page.locator('.photo-tile')).toHaveCount(3);
+    await expect.poll(() => aborted).toBe(true);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+  } finally { release(); await page.unrouteAll({ behavior: 'wait' }); }
+});
+
+test('uploading an existing file under a new name is visibly skipped', async ({ page }) => {
+  const auth = await import('../src/lib/server/auth');
+  const invitation = auth.createMember('Duplicate uploads', 'duplicate-uploads');
+  await page.goto(`${origin}${basePath}/#invite=${invitation.token}`);
+  await expect(page.locator('.photo-tile').first()).toBeVisible();
+  const payload = await readFile(path.join(directory, 'photos', 'host', 'weekend-0.jpg'));
+  await page.locator('input[type="file"]').setInputFiles({name:'renamed-weekend.jpg',mimeType:'image/jpeg',buffer:payload});
+  await expect(page.locator('.upload-panel')).toContainText('Already in collection · skipped');
+  expect((await readdir(path.join(directory, 'photos', 'duplicate-uploads'))).filter(name=>!name.startsWith('.'))).toEqual([]);
 });
