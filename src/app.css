@@ -119,3 +119,5 @@
 .transfer-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}.transfer-actions>.icon-button{min-width:44px;min-height:44px}
 
 .read-only-label{font-size:12px;color:#6d6782;white-space:nowrap}
+
+.search-input input{min-width:0;flex:1}.search-input input::-webkit-search-cancel-button{-webkit-appearance:none}.search-clear{flex:0 0 44px;width:44px;height:44px;min-height:44px;margin:-10px -10px -10px 0}

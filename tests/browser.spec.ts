@@ -806,6 +806,11 @@ test('search defaults to semantic relevance, combines people and conditions, and
   await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
   await page.getByLabel('Search photos', { exact: true }).fill('no-such-photo');
   await expect(page.getByRole('heading', { name: 'No matching photos' })).toBeVisible();
+  await page.getByRole('button', { name: 'Clear search text', exact: true }).click();
+  await expect(page.getByLabel('Search photos', { exact: true })).toHaveValue('');
+  await expect(page.getByLabel('Search photos', { exact: true })).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Clear search text', exact: true })).toHaveCount(0);
+  await expect(page.locator('.photo-tile')).toHaveCount(initial.total);
 });
 
 

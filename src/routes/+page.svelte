@@ -256,6 +256,14 @@
     void loadPhotos();
   }
 
+  function clearSearchText() {
+    clearTimeout(searchTimer);
+    query = '';
+    selected = new Set();
+    searchInput?.focus();
+    void loadPhotos();
+  }
+
   function search() {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => { selected = new Set(); void loadPhotos(); }, 300);
@@ -689,7 +697,7 @@
       <header class="topbar" bind:clientHeight={searchHeaderHeight}>
         <button class="identity-button mobile-identity" on:click={openProfile} aria-label={`Change name for ${data.user.name}`} aria-haspopup="dialog" title={`Change name: ${data.user.name}`}><span class="identity-icon"><Icon name="user" size={22} /></span><span class="identity-name">{data.user.name}</span></button>
         <div class="breadcrumb"><Icon name="folder" size={16} /><span>{data.collectionName}</span><Icon name="chevron" size={13} /><strong>{pageTitle}</strong></div>
-        <label class="search-input"><Icon name="search" size={18} /><input type="search" aria-label="Search photos" bind:this={searchInput} on:focus={() => searchActive = true} on:click={() => searchActive = true} aria-controls="search-controls" placeholder="Describe a scene, place, or moment…" bind:value={query} on:input={search} /><span class="search-hint">{searchOptions.mode === 'semantic' ? 'by meaning' : searchOptions.mode === 'filename' ? 'by filename' : 'descriptions'}</span></label>
+        <div class="search-input"><Icon name="search" size={18} /><input type="search" aria-label="Search photos" bind:this={searchInput} on:focus={() => searchActive = true} on:click={() => searchActive = true} aria-controls="search-controls" placeholder="Describe a scene, place, or moment…" bind:value={query} on:input={search} /><span class="search-hint">{searchOptions.mode === 'semantic' ? 'by meaning' : searchOptions.mode === 'filename' ? 'by filename' : 'descriptions'}</span>{#if query}<button type="button" class="icon-button search-clear" aria-label="Clear search text" title="Clear search" on:click={clearSearchText}><Icon name="close" size={18} /></button>{/if}</div>
         <div class="transfer-actions">
           <button class="icon-button" on:click={() => downloadOptions.open()} aria-label="Download photos" aria-haspopup="dialog" title="Download photos"><Icon name="download" size={20} /></button>
           {#if !data.readOnly}<ImportPhotos {base} name={data.user.name} collectionName={data.collectionName} bind:this={uploadOptions} on:choose={() => input.click()} on:changed={() => void loadPhotos()} />{:else}<span class="read-only-label">Read-only</span>{/if}
