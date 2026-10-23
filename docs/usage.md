@@ -53,3 +53,5 @@ Open a photo and select **Info** (or press **I**) to see its description, captur
 Metadata and person portraits come from Immich. Original downloads continue to stream directly from the shared files.
 
 Photos and videos can be selected together from storage, including iPhone MOV/HEVC clips and Android MP4/3GP files. Videos use the same resumable uploads and duplicate checks as photos. Immich supplies posters and browser-compatible video playback; originals remain unchanged and download directly. Video uploads are checked with FFprobe (included in the Docker image). Google Photos link import still imports photos only.
+
+On iPhone, large selections or photos stored in iCloud can leave the native picker open after **Add** while iOS prepares the whole batch. Tap Add once and wait; repeated taps can start extra preparation work. If it stalls, cancel and choose fewer items, or save the selection to **Files** in Photos and use **Browse / Choose File**. Gather receives no files or progress until the system picker finishes. See the [WebKit report](https://bugs.webkit.org/show_bug.cgi?id=325067).

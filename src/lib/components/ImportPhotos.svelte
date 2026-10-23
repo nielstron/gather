@@ -72,6 +72,7 @@
         <button class="upload-choice" on:click={chooseStorage}><Icon name="folder" size={26} /><span><strong>Upload from storage</strong><small>Choose photos and videos from your device.</small></span><Icon name="chevron" size={18} /></button>
         <button class="upload-choice" on:click={() => view = 'import'}><Icon name="download" size={26} /><span><strong>Import from link</strong><small>{active ? `Importing ${active.processed} of ${active.total} photos` : 'Bring in a shared Google Photos album.'}</small></span><Icon name="chevron" size={18} /></button>
       </div>
+      <details class="import-help"><summary>iPhone picker taking a long time after Add?</summary><p>Your iPhone prepares the entire selection before sending it to Gather. Large batches and iCloud photos can take a while without showing progress. Tap Add once and wait. If it stays stuck, cancel and try fewer items, or save the selection to Files in Photos and use Browse / Choose File.</p></details>
     {:else}
     <button class="text-button import-back" on:click={() => view = 'choice'}><Icon name="chevron" size={15} />Back to upload options</button>
     <form on:submit|preventDefault={() => action('preview')}>
