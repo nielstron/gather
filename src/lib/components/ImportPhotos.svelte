@@ -66,10 +66,10 @@
 <div class="import-control">
   <button class="primary-button top-upload upload-trigger" on:click={open} aria-label="Upload photos" aria-haspopup="dialog"><Icon name="upload" size={18} /><span>Upload photos</span>{#if active}<span class="small-spinner" aria-label="Import in progress"></span>{/if}</button>
   <dialog use:modalHistory class="import-dialog" bind:this={dialog} on:close={schedule} aria-labelledby="import-heading">
-    <header><div><h2 id="import-heading">{view === 'import' ? 'Import from link' : 'Upload photos'}</h2><p>{view === 'import' ? 'Bring a shared album into your collection.' : 'Choose how to add photos.'}</p></div><button class="icon-button" on:click={() => dialog.close()} aria-label={view === 'import' ? 'Close import' : 'Close upload options'}><Icon name="close" /></button></header>
+    <header><div><h2 id="import-heading">{view === 'import' ? 'Import from link' : 'Upload photos'}</h2><p>{view === 'import' ? 'Bring a shared album into your collection.' : 'Choose how to add photos and videos.'}</p></div><button class="icon-button" on:click={() => dialog.close()} aria-label={view === 'import' ? 'Close import' : 'Close upload options'}><Icon name="close" /></button></header>
     {#if view === 'choice'}
       <div class="upload-choices">
-        <button class="upload-choice" on:click={chooseStorage}><Icon name="folder" size={26} /><span><strong>Upload from storage</strong><small>Choose photos from your device.</small></span><Icon name="chevron" size={18} /></button>
+        <button class="upload-choice" on:click={chooseStorage}><Icon name="folder" size={26} /><span><strong>Upload from storage</strong><small>Choose photos and videos from your device.</small></span><Icon name="chevron" size={18} /></button>
         <button class="upload-choice" on:click={() => view = 'import'}><Icon name="download" size={26} /><span><strong>Import from link</strong><small>{active ? `Importing ${active.processed} of ${active.total} photos` : 'Bring in a shared Google Photos album.'}</small></span><Icon name="chevron" size={18} /></button>
       </div>
     {:else}

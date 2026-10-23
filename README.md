@@ -10,7 +10,7 @@ Everyone adds their photos to one collection and downloads the photos they want.
 - **Keep your originals.** Duplicate files are detected before uploading; interrupted uploads resume.
 - **Find a moment.** Search by description, people, dates, location, and camera details through Immich.
 - **Download your picks.** Choose contributors, exclude yourself, or get only new and changed photos.
-- **Bring photos in.** Upload from your device or import a shared Google Photos album.
+- **Bring media in.** Upload photos and videos from your device, or import photos from a shared Google Photos album.
 - **Manage it in the browser.** Choose folders, create collections, and manage invitations at `/admin`.
 
 | Download options | Collection administration |
@@ -56,7 +56,7 @@ Keep the upload tab open and visible until transfers finish. Uploads can resume 
 
 ## Development
 
-Requires Node 22.17+.
+Requires Node 22.17+ and FFmpeg/FFprobe for video uploads.
 
 ```bash
 npm ci
@@ -64,7 +64,7 @@ cp .env.example .env
 npm run dev
 ```
 
-Run `npm run check`, `npm test`, and `npm run test:e2e` before contributing. Browser tests use isolated fixtures and a mock Immich server. This is an early project intended for one Node process and small groups.
+Run `npm run check`, `npm test`, and `npm run test:e2e` before contributing. Browser tests use isolated fixtures, Chromium and WebKit (`npx playwright install --with-deps webkit`), and a mock Immich server. This is an early project intended for one Node process and small groups.
 
 ## License
 

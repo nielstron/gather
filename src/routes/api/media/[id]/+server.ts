@@ -2,7 +2,8 @@ import { recordDownloadedPhotos } from '$lib/server/auth';
 import { Readable } from 'node:stream';
 import path from 'node:path';
 import { openPhoto, previewPath, contentDisposition, MediaError } from '$lib/server/media';
-import { fetchImmichImage } from '$lib/server/immich';
+import { isVideo } from '$lib/media-format';
+import { fetchImmichVideo, fetchImmichImage } from '$lib/server/immich';
 import { apiError } from '$lib/server/http';
 import type { RequestHandler } from './$types';
 
@@ -14,7 +15,8 @@ const browserImages: Record<string, string> = {
 export const GET: RequestHandler = async ({ params, url, request, locals }) => {
   try {
     const kind = url.searchParams.get('kind') || 'thumbnail';
-    if (!['thumbnail', 'preview', 'fullsize', 'original'].includes(kind)) throw new MediaError(400, 'Unknown image size');
+    if (!['thumbnail', 'preview', 'fullsize', 'original', 'video'].includes(kind)) throw new MediaError(400, 'Unknown image size');
+    if (kind === 'video') { const relative = await previewPath(params.id); if (!isVideo(relative)) throw new MediaError(400, 'This file is not a video'); return await fetchImmichVideo(relative, request.headers.get('range'), request.signal); }
     let relative: string;
     if (kind === 'original' || kind === 'fullsize') {
       const file = await openPhoto(params.id);

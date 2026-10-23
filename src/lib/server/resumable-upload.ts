@@ -14,7 +14,7 @@ type Metadata = { name: string; size: number; type: string; checksum: string; ow
 const locks = new Set<string>();
 const pending = new Map<string, { promise: Promise<Photo>; controller: AbortController }>();
 const lifetime = 24 * 3600_000;
-const diskBudget = 1024 * 1024 * 1024;
+const diskBudget = 4 * 1024 * 1024 * 1024;
 let sweptAt = 0;
 function location(member: Member, id: string) {
   if (!/^[A-Za-z0-9_-]{16,100}$/.test(id)) throw new MediaError(400, 'Invalid upload identifier.');

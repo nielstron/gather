@@ -518,3 +518,26 @@ export async function photoInformation(relative: string, revision: string, signa
   while (informationCache.size > 500) informationCache.delete(informationCache.keys().next().value!);
   return value;
 }
+
+/** Stream Immich's compatible video rendition, preserving seeking and cancellation. */
+export async function fetchImmichVideo(relative: string, range: string | null, signal: AbortSignal): Promise<Response> {
+  const config = configuration();
+  if (!config) throw new ImmichError(503, 'Video playback needs an Immich connection. Download the original instead.');
+  if (range && (range.length > 100 || !/^bytes=(?:\d+-\d*|-\d+)$/.test(range))) throw new ImmichError(416, 'Invalid video byte range.');
+  const original = originalPath(config, relative), asset = (await resolveAssets(config, [original])).get(original);
+  if (!asset) throw new ImmichError(404, 'The video is waiting for Immich to index it. Download the original or retry shortly.');
+  const headersTimeout = new AbortController();
+  const timer = setTimeout(() => headersTimeout.abort(), 15_000);
+  let response: Response;
+  try {
+    response = await fetch(`${config.url}/api/assets/${asset.id}/video/playback`, { headers: { 'x-api-key': config.key, ...(range ? { Range: range } : {}) }, redirect: 'error', signal: AbortSignal.any([signal, headersTimeout.signal]) });
+  } catch { throw new ImmichError(503, 'Video playback is temporarily unavailable. Download the original or retry shortly.'); }
+  finally { clearTimeout(timer); }
+  const headers = new Headers({ 'Cache-Control': 'private, max-age=60' });
+  for (const name of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
+    const value = response.headers.get(name); if (value) headers.set(name, value);
+  }
+  if (response.status === 416) { await response.body?.cancel(); return new Response(null, { status: 416, headers }); }
+  if (![200, 206].includes(response.status) || !response.headers.get('content-type')?.startsWith('video/')) { await response.body?.cancel(); throw new ImmichError(503, 'This video is still processing or unavailable. Download the original or retry shortly.'); }
+  return new Response(response.body, { status: response.status, headers });
+}

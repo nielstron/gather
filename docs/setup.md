@@ -20,7 +20,7 @@ photos.example.com {
 }
 ```
 
-`ORIGIN` must match the browser origin, including any nonstandard port. Set the proxy's upload limit and `BODY_SIZE_LIMIT` at least as high as `MAX_UPLOAD_MB` (defaults: `52M` and `50`). For HTTP development, use `COOKIE_SECURE=false`.
+`ORIGIN` must match the browser origin, including any nonstandard port. Set the proxy's upload limit and `BODY_SIZE_LIMIT` at least as high as `MAX_UPLOAD_MB` (defaults: `1100M` and `1024`). For HTTP development, use `COOKIE_SECURE=false`.
 
 ## First administrator
 
@@ -91,12 +91,12 @@ Health checks use `/api/health`, or `/gather/api/health` with that prefix. Chang
 
 ## Access, storage, and backups
 
-- Everyone in a collection can view and download its supported images. There are no per-person viewing restrictions or read-only guest roles.
+- Everyone in a collection can view and download its supported photos and videos. There are no per-person viewing restrictions or read-only guest roles.
 - Personal invitation rotation signs out that identity's sessions. Replacing the group link signs out shared-link sessions. Guests with a valid group link can claim existing names; names are not passwords.
-- Hidden files, symlinks, non-photo files, and paths outside the allowed root are excluded. Keep `DATA_ROOT` outside the whole shareable root and expose photos only through authenticated Gather routes.
-- Originals preserve embedded metadata, including GPS. Uploads are image-validated and never overwrite existing files. HEIC upload support depends on the installed decoder; Immich can preview existing HEIC files.
+- Hidden files, symlinks, unsupported media files, and paths outside the allowed root are excluded. Keep `DATA_ROOT` outside the whole shareable root and expose photos only through authenticated Gather routes.
+- Originals preserve embedded metadata, including GPS. Uploads are media-validated and never overwrite existing files. HEIC upload support depends on the installed decoder; Immich can preview existing HEIC files.
 - Back up original photos and **all of `DATA_ROOT`**, including `settings.json`, `admin.sqlite`, `auth.sqlite`, `collections.json`, and `collections/`. Browser settings override environment defaults. Stop Gather before copying SQLite files directly, or use SQLite online backups.
-- Upload recovery uses local staging under `DATA_ROOT`, with a shared 1 GiB resumable buffer budget and 24-hour expiry. Browser queues expire after seven days. Keep the upload tab visible; mobile operating systems can suspend background transfers.
+- Upload recovery uses local staging under `DATA_ROOT`, with a shared 4 GiB resumable buffer budget and 24-hour expiry. Browser queues expire after seven days. Keep the upload tab visible; mobile operating systems can suspend background transfers.
 
 To recover a lost administrator password, stop Gather, move `admin.sqlite` and its `-wal`/`-shm` files aside, restart, and reclaim the administrator using the newly generated private setup token. This requires server access.
 

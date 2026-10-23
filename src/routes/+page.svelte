@@ -4,6 +4,7 @@
   import { collectionBase } from '$lib/collection-path';
   $: base = collectionBase($page.url.pathname, appBase);
   import { mdiDownload, mdiTrashCanOutline, mdiMagnifyPlusOutline, mdiMagnifyMinusOutline, mdiClose, mdiChevronLeft, mdiChevronRight, mdiInformationOutline } from '@mdi/js';
+  import { fileChecksum } from '$lib/file-checksum';
   import { saveQueuedUpload, updateQueuedUpload, removeQueuedUpload, restoreQueuedUploads } from '$lib/upload-queue';
   import { transferResumable, TransferError } from '$lib/resumable-upload';
   import { sortPhotos } from '$lib/sort';
@@ -13,6 +14,7 @@
   import { Button, Badge } from '@immich/ui';
   import justifiedLayout from 'justified-layout';
   import PhotoSwipe from 'photoswipe';
+  import { mediaAccept, isVideo } from '$lib/media-format';
   import { modalHistory, trackModalHistory, settleModalHistory } from '$lib/modal-history';
   import { installProgressiveImages } from '$lib/progressive-viewer';
   import SortPicker from '$lib/components/SortPicker.svelte';
@@ -210,7 +212,7 @@
     ) }));
   }
 
-  function mediaUrl(photo: Photo, kind: 'thumbnail' | 'preview' | 'fullsize' | 'original') {
+  function mediaUrl(photo: Photo, kind: 'thumbnail' | 'preview' | 'fullsize' | 'original' | 'video') {
     return `${base}/api/media/${photo.id}?kind=${kind}&v=${encodeURIComponent(photo.revision || photo.modifiedAt)}`;
   }
 
@@ -438,25 +440,34 @@
 
   function openPhoto(photo: Photo) {
     if (selected.size) { toggleSelect(photo.id); return; }
-    if (photo.previewStatus !== 'ready' || imageErrors.has(photo.id)) {
+    if (!isVideo(photo.name) && (photo.previewStatus !== 'ready' || imageErrors.has(photo.id))) {
       pendingPhoto = photo;
       pendingDialog.showModal();
       return;
     }
-    const viewable = sortedPhotos.filter((item) => item.previewStatus === 'ready' && !imageErrors.has(item.id));
+    const viewable = sortedPhotos.filter((item) => isVideo(item.name) || item.previewStatus === 'ready' && !imageErrors.has(item.id));
     const viewerIcon = (inner: string) => `<svg aria-hidden="true" class="pswp__icn" viewBox="0 0 24 24" width="24" height="24">${inner}</svg>`;
     viewer = new PhotoSwipe({
       zoomSVG: viewerIcon(`<path class="gather-zoom-in" d="${mdiMagnifyPlusOutline}"/><path class="gather-zoom-out" d="${mdiMagnifyMinusOutline}"/>`),
       closeSVG: viewerIcon(`<path d="${mdiClose}"/>`),
       arrowPrevSVG: viewerIcon(`<path d="${mdiChevronLeft}"/>`),
       arrowNextSVG: viewerIcon(`<path d="${mdiChevronRight}"/>`),
-      dataSource: viewable.map((item) => ({ src: mediaUrl(item, 'preview'), msrc: mediaUrl(item, 'thumbnail'), thumbnailSrc: mediaUrl(item, 'thumbnail'), fullSrc: mediaUrl(item, 'fullsize'), width: item.width || 1600, height: item.height || 1200, alt: item.name })),
+      dataSource: viewable.map((item) => isVideo(item.name) ? { type: 'html', html: `<div class="viewer-video"><video controls playsinline preload="none"${item.previewStatus === 'ready' ? ` poster="${mediaUrl(item, 'thumbnail')}"` : ''} src="${mediaUrl(item, 'video')}"></video><p class="video-error" hidden>This video is still processing or cannot play in this browser. You can download the original above and retry shortly.</p></div>`, width: item.width || 1600, height: item.height || 900 } : { src: mediaUrl(item, 'preview'), msrc: mediaUrl(item, 'thumbnail'), thumbnailSrc: mediaUrl(item, 'thumbnail'), fullSrc: mediaUrl(item, 'fullsize'), width: item.width || 1600, height: item.height || 1200, alt: item.name }),
       paddingFn: viewport => ({ top: 0, left: 0, right: infoOpen && viewport.x > 760 ? 360 : 0, bottom: infoOpen && viewport.x <= 760 ? Math.min(viewport.y * .72, 660) : 0 }),
       index: viewable.findIndex((item) => item.id === photo.id), bgOpacity: 0.97,
       preload: [1, 1], showHideAnimationType: 'fade', errorMsg: 'Immich has not finished this preview. You can still download the original.',
     });
     const activeViewer = viewer;
     installProgressiveImages(activeViewer);
+    activeViewer.on('pointerDown', event => { if (event.originalEvent.target instanceof Element && event.originalEvent.target.closest('video')) event.preventDefault(); });
+    activeViewer.addFilter('preventPointerEvent', (prevent, event) => event.target instanceof Element && event.target.closest('video') ? false : prevent);
+    const pauseVideos = () => activeViewer.element?.querySelectorAll('video').forEach(video => video.pause());
+    activeViewer.on('change', pauseVideos);
+    activeViewer.on('close', pauseVideos);
+    activeViewer.on('contentAppend', ({ content }) => {
+      const video = content.element?.querySelector('video');
+      if (video) video.addEventListener('error', () => { const message = video.parentElement?.querySelector<HTMLElement>('.video-error'); if (message) message.hidden = false; });
+    });
     let releaseHistory = () => {};
     activeViewer.on('afterInit', () => {
       releaseHistory = trackModalHistory(() => {
@@ -578,8 +589,8 @@
         let contentKey: string | undefined;
         let reservation: Promise<void> | undefined;
         try {
-          // Web Crypto hashes locally; only this digest and size are sent during preflight.
-          const checksum = item.checksum || Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', await item.file.arrayBuffer())), byte => byte.toString(16).padStart(2, '0')).join('');
+          // Hash locally in bounded chunks; only the digest and size are sent during preflight.
+          const checksum = item.checksum || await fileChecksum(item.file, controller.signal);
           updateUpload(item.id, { checksum });
           contentKey = `${checksum}:${item.file.size}`;
           // Same-content queue entries wait for the current attempt, then check again.
@@ -841,7 +852,7 @@
             {#if box}<article class:selected={selected.has(photo.id)} class:pending={photo.previewStatus !== 'ready' || imageErrors.has(photo.id)} class="photo-tile" style:left={`${box.left}px`} style:top={`${box.top}px`} style:width={`${box.width}px`} style:height={`${box.height}px`}>
               <button class="photo-open" on:click={() => openPhoto(photo)} aria-label={`Open ${photo.name}, shared by ${photo.owner}`} title={`${photo.name} · ${photo.owner}`}>
                 {#if photo.previewStatus === 'ready' && !imageErrors.has(photo.id)}<Thumbnail src={mediaUrl(photo, 'thumbnail')} alt={photo.name} eager={(photoIndexes.get(photo.id) || 0) < 4} on:error={() => { imageErrors = new Set([...imageErrors, photo.id]); }} />{:else}<div class="pending-preview"><Icon name={photo.previewStatus === 'pending' ? 'clock' : 'image'} size={24} /><span>{photo.previewStatus === 'pending' ? 'Processing' : 'No preview'}</span></div>{/if}
-                <span class="photo-gradient"></span><span class="photo-owner">{photo.owner}</span>
+                <span class="photo-gradient"></span>{#if isVideo(photo.name)}<span class="video-badge"><Icon name="play" size={20} /></span>{/if}<span class="photo-owner">{photo.owner}</span>
               </button>
               <label class="photo-checkbox" class:checked={selected.has(photo.id)}><input type="checkbox" checked={selected.has(photo.id)} on:change={() => toggleSelect(photo.id)} aria-label={`Select ${photo.name}`} /><span><Icon name="check" size={15} /></span></label>
               <a class="photo-download" href={mediaUrl(photo, 'original')} download={photo.name} title="Download original" aria-label={`Download ${photo.name}`}><Icon name="download" size={17} /></a>
@@ -857,7 +868,7 @@
     </main>
   </div>
   <DownloadPhotos {base} selfFolder={data.user.folder} bind:this={downloadOptions} />
-  <input class="sr-only" bind:this={input} type="file" multiple accept="image/*,.heic,.heif,.avif,.tif,.tiff" aria-label="Choose photos to upload" on:change={(event) => { if (event.currentTarget.files) addUploads(event.currentTarget.files); event.currentTarget.value = ''; }} />
+  <input class="sr-only" bind:this={input} type="file" multiple accept={mediaAccept} aria-label="Choose photos and videos to upload" on:change={(event) => { if (event.currentTarget.files) addUploads(event.currentTarget.files); event.currentTarget.value = ''; }} />
   <dialog use:modalHistory class="delete-dialog" bind:this={deleteDialog} aria-labelledby="delete-heading">
     <h2 id="delete-heading">Delete {deleteCandidates.length === 1 ? 'photo' : `${deleteCandidates.length} photos`}?</h2>
     {#if deleteCandidates.length === 1}<p class="delete-filename">{deleteCandidates[0].name}</p>{/if}

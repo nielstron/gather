@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { readFile, readdir, unlink } from 'node:fs/promises';
 import os from 'node:os';
@@ -363,4 +365,42 @@ test('full-resolution web images stream the exact original without an Immich dow
   assert.equal(response.headers.get('content-disposition'),null);
   assert.equal(response.headers.get('cache-control'),'private, max-age=60');
   assert.deepEqual(Buffer.from(await response.arrayBuffer()),png);
+});
+
+
+test('phone videos retain their bytes, enter the gallery, download and deduplicate before upload', async () => {
+  for (const [name, codec, size] of [['iphone.MOV', 'libx264', '120x160'], ['android.mp4', 'libx264', '160x120'], ['android.3gp', 'h263', '176x144']]) {
+    const filename = path.join(directory, name);
+    execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', `color=c=blue:s=${size}:d=0.4`, '-c:v', codec, '-threads', '1', '-pix_fmt', 'yuv420p', '-y', filename]);
+    const bytes = await readFile(filename);
+    const saved = await media.saveUpload(alice, name, body(bytes));
+    assert.equal(saved.type, 'video');
+    assert.deepEqual([saved.width, saved.height], size.split('x').map(Number));
+    assert.ok((await media.scanPhotos([alice])).some(item => item.id === saved.id && item.type === 'video'));
+    const opened = await media.openPhoto(saved.id);
+    try { assert.deepEqual(await opened.handle.readFile(), bytes); } finally { await opened.handle.close(); }
+    const duplicate = await media.duplicatePhoto(createHash('sha256').update(bytes).digest('hex'), bytes.length);
+    assert.equal(duplicate?.id, saved.id);
+  }
+  await assertNoTemporaryFiles();
+});
+
+test('video validation rejects disguised images, HTML and audio-only containers', async () => {
+  await assert.rejects(media.saveUpload(alice, 'fake.mov', body(await sharp({ create: { width: 7, height: 9, channels: 3, background: 'green' } }).png().toBuffer())), hasStatus(415));
+  await assert.rejects(media.saveUpload(alice, 'fake.mp4', body(Buffer.from('<html>not video</html>'))), hasStatus(415));
+  const audio = path.join(directory, 'audio.mp4');
+  execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=duration=0.3', '-c:a', 'aac', '-y', audio]);
+  await assert.rejects(media.saveUpload(alice, 'audio.mp4', body(await readFile(audio))), hasStatus(415));
+  await assertNoTemporaryFiles();
+});
+
+
+test('iPhone HEVC clips and rotation metadata are accepted without modifying the original', async () => {
+  const original = path.join(directory, 'hevc.mov'), rotated = path.join(directory, 'rotated.mov');
+  execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=160x120:d=0.4', '-c:v', 'libx265', '-threads', '1', '-x265-params', 'pools=1:frame-threads=1:log-level=error', '-tag:v', 'hvc1', '-pix_fmt', 'yuv420p', '-y', original]);
+  execFileSync('ffmpeg', ['-v', 'error', '-i', original, '-c', 'copy', '-metadata:s:v:0', 'rotate=90', '-y', rotated]);
+  const bytes = await readFile(rotated);
+  const saved = await media.saveUpload(alice, 'iphone-hevc.MOV', body(bytes));
+  assert.deepEqual([saved.width, saved.height], [120, 160]);
+  assert.deepEqual(await readFile(path.join(photoRoot, 'alice', saved.name)), bytes);
 });

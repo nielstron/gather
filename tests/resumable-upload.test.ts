@@ -58,7 +58,7 @@ test('incorrect checksums are rejected before publishing a photo and quota failu
   await assert.rejects(finishUpload(alice, id), status(400));
   assert(!(await readdir(path.join(directory, 'photos', 'alice'))).includes('invalid-hash.png'));
   const quota = path.join(directory, 'data', 'resumable', 'quota.part');
-  await writeFile(quota, ''); await truncate(quota, 1024 * 1024 * 1024);
+  await writeFile(quota, ''); await truncate(quota, 4 * 1024 * 1024 * 1024);
   try {
     await startUpload(alice, id, details);
     await assert.rejects(appendUpload(alice, id, 0, small), status(507));
@@ -77,4 +77,16 @@ test('a truncated request and an oversized chunk never advance the durable uploa
   const oversized = new Request('http://localhost/api/upload/resumable/test', { method: 'PATCH', headers: { 'upload-offset': '0' }, body: image.subarray(0, chunkSize + 1) });
   assert.equal((await route.PATCH({ request: oversized, params: { id }, locals: { user: alice } } as never)).status, 413);
   assert.equal((await startUpload(alice, id, details)).offset, 0);
+});
+
+
+test('1 GB phone videos can start and resume but larger files are rejected', async () => {
+  const id = 'one-gigabyte-video-upload';
+  const size = 1024 * 1024 * 1024;
+  const meta = { ...details, name: 'phone.MOV', type: 'video/quicktime', size };
+  assert.equal((await startUpload(alice, id, meta)).offset, 0);
+  await appendUpload(alice, id, 0, new Uint8Array(chunkSize));
+  assert.equal((await startUpload(alice, id, meta)).offset, chunkSize);
+  await assert.rejects(startUpload(alice, 'oversized-video-upload', { ...meta, size: size + 1 }), status(400));
+  await cancelResumableUpload(alice, id);
 });

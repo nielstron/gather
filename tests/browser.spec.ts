@@ -1,6 +1,6 @@
-import { test, expect, devices } from '@playwright/test';
+import { test, expect, devices, webkit } from '@playwright/test';
 import { createServer, type Server } from 'node:http';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { mkdtemp, mkdir, lstat, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -16,6 +16,7 @@ let importImage: Buffer, importDownloads = 0;
 let importGate: Promise<void> | undefined;
 const indexed = new Map<string, string>();
 const images = new Map<string, Buffer>();
+const videos = new Map<string, Buffer>();
 const dimensions = new Map<string, { width: number; height: number }>();
 let thumbnailGate: Promise<void> | undefined;
 let heldThumbnails = 0, peakHeldThumbnails = 0;
@@ -34,8 +35,11 @@ async function indexFiles() {
       const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4000-8000-${hex.slice(12, 24)}`;
       indexed.set(`/external/gather/${relative}`, id);
       const image = await readFile(path.join(directory, 'photos', relative));
-      images.set(id, image);
-      const metadata = await sharp(image).metadata();
+      const video = /\.(mov|mp4|3gp)$/i.test(filename);
+      if (video) videos.set(id, image);
+      const poster = video ? await sharp({ create: { width: 160, height: 120, channels: 3, background: 'blue' } }).jpeg().toBuffer() : image;
+      images.set(id, poster);
+      const metadata = await sharp(poster).metadata();
       dimensions.set(id, { width: metadata.width!, height: metadata.height! });
     }
   }
@@ -96,6 +100,14 @@ test.beforeAll(async () => {
         response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ assets: { items: matches, nextCursor: null } })); return;
       }
       if (/^\/api\/people\/[^/]+\/thumbnail$/.test(request.url || '')) { response.writeHead(200, { 'content-type': 'image/png' }).end(importImage); return; }
+      const playbackId = request.url?.match(/^\/api\/assets\/([^/]+)\/video\/playback$/)?.[1];
+      if (playbackId && videos.has(playbackId)) {
+        const bytes = videos.get(playbackId)!;
+        const range = request.headers.range?.match(/^bytes=(\d+)-(\d*)$/);
+        const start = range ? Number(range[1]) : 0, end = range?.[2] ? Math.min(Number(range[2]), bytes.length - 1) : bytes.length - 1;
+        if (start >= bytes.length || end < start) { response.writeHead(416, { 'content-range': `bytes */${bytes.length}` }).end(); return; }
+        response.writeHead(range ? 206 : 200, { 'content-type': 'video/mp4', 'accept-ranges': 'bytes', 'content-length': end - start + 1, ...(range ? { 'content-range': `bytes ${start}-${end}/${bytes.length}` } : {}) }).end(bytes.subarray(start, end + 1)); return;
+      }
       const detailId = request.url?.match(/^\/api\/assets\/([^/?]+)$/)?.[1];
       if (detailId) {
         const original = [...indexed].find(([,id]) => id === detailId)?.[0];
@@ -743,6 +755,8 @@ test('duplicate checks retry before sending any file and can be cancelled', asyn
 test('search defaults to semantic relevance, combines people and conditions, and keeps filename search available', async ({ page, request }) => {
   const auth = await import('../src/lib/server/auth');
   const invitation = (await auth.createMember('Semantic search'));
+  // Finish indexing prior upload fixtures before asserting stable search counts.
+  await indexFiles();
   const smartRequests: Record<string, any>[] = [];
   // Observe the private Gather request; upstream credentials never reach the browser.
   page.on('request', request => {
@@ -1470,4 +1484,58 @@ test('photo information uses Immich metadata, follows the viewer, and closes wit
   expect((await page.request.get(`${base}/api/photos/${forbidden}/info`)).status()).toBe(400);
   expect((await page.request.get(`${base}/api/search/people/99999999-2222-4111-8111-111111111111/thumbnail`)).status()).toBe(404);
   expect(errors).toEqual([]);
+});
+
+
+for (const platform of ['Android', 'iPhone']) test(`${platform} picker accepts videos and uploads, plays, seeks and downloads originals`, async ({ browser }) => {
+  const safari = platform === 'iPhone' ? await webkit.launch({ executablePath: webkit.executablePath(), args: [] }) : undefined;
+  const context = await (safari || browser).newContext({ ...devices[platform === 'iPhone' ? 'iPhone 13' : 'Pixel 7'] });
+  try {
+    const page = await context.newPage();
+    const auth = await import('../src/lib/server/auth');
+    const invitation = await auth.createMember(`Video ${platform}`);
+    const session = auth.exchangeInvite(invitation.token)!;
+    await context.addCookies([{ name: 'gather_session', value: session.sessionToken, url: `${origin}${basePath || '/'}` }]);
+    const filename = platform === 'iPhone' ? 'phone.MOV' : 'phone.mp4';
+    const fixture = path.join(directory, filename);
+    execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', `color=c=${platform === 'iPhone' ? 'red' : 'blue'}:s=160x120:d=1`, '-c:v', 'libx264', '-threads', '1', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-y', fixture]);
+    const original = await readFile(fixture);
+    await page.goto(`${origin}${basePath}/`);
+    await page.getByRole('button', { name: 'Upload photos', exact: true }).click();
+    const choosing = page.waitForEvent('filechooser');
+    await page.getByRole('button', { name: /Upload from storage/ }).click();
+    const chooser = await choosing;
+    const accept = await chooser.element().getAttribute('accept');
+    expect(accept).toContain('image/*'); expect(accept).toContain('video/*'); expect(accept).toContain('.mov'); expect(accept).toContain('.mp4');
+    await chooser.setFiles(fixture);
+    const tile = page.getByRole('button', { name: `Open ${filename},`, exact: false });
+    await expect(tile).toBeVisible({ timeout: 20000 });
+    // Simulate the scanner completing immediately, independent of the rescan debounce.
+    await indexFiles();
+    await expect.poll(async () => {
+      const listing = await (await page.request.get(`${origin}${basePath}/api/photos?refresh=1`)).json();
+      return listing.photos.find((photo: any) => photo.name === filename)?.previewStatus;
+    }, { timeout: 20000 }).toBe('ready');
+    await page.getByRole('button', { name: 'Refresh photos', exact: true }).click();
+    await tile.click();
+    const video = page.locator('.pswp__item[aria-hidden="false"] video');
+    await expect(video).toBeVisible();
+    const source = await video.getAttribute('src');
+    const range = await page.request.get(new URL(source!, page.url()).href, { headers: { Range: 'bytes=0-99' } });
+    expect(range.status()).toBe(206); expect((await range.body()).length).toBe(100);
+    expect(range.headers()['content-range']).toBe(`bytes 0-99/${original.length}`);
+    const playbackUrl = new URL(source!, page.url()).href;
+    expect((await fetch(playbackUrl)).status).toBe(401);
+    expect((await page.request.get(playbackUrl, { headers: { Range: 'bytes=-' } })).status()).toBe(416);
+    expect((await page.request.get(playbackUrl, { headers: { Range: `bytes=${original.length + 1}-` } })).status()).toBe(416);
+    expect(range.headers()['x-api-key']).toBeUndefined();
+    await video.evaluate((element: HTMLVideoElement) => element.play());
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.videoWidth)).toBe(160);
+    await video.evaluate((element: HTMLVideoElement) => { element.currentTime = 0.5; });
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime)).toBeGreaterThanOrEqual(0.5);
+    const download = await page.request.get(new URL(source!.replace('kind=video', 'kind=original'), page.url()).href);
+    expect(download.status()).toBe(200); expect(await download.body()).toEqual(original);
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page.locator('.pswp')).not.toBeVisible();
+  } finally { await context.close(); await safari?.close(); }
 });

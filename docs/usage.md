@@ -14,7 +14,7 @@ Click your name to change it. Each person has one folder named after them, with 
 
 Choose **Upload photos**, then **Upload from storage** or **Import from link**. Dragging files onto the gallery also starts an upload.
 
-Uploads check SHA-256 before transferring data. Identical contents anywhere in the collection are skipped, even under another filename. Different files with the same filename get a suffix; existing photos are never overwritten.
+Uploads check SHA-256 in small chunks before transferring data, keeping memory use bounded for large videos. Identical contents anywhere in the collection are skipped, even under another filename. Different files with the same filename get a suffix; existing photos are never overwritten.
 
 **Clear successful** removes finished and skipped entries from the upload panel without deleting photos. **Retry all** restarts failed or cancelled uploads and pending retries. Both buttons stay available when the panel is minimized.
 
@@ -44,10 +44,12 @@ Ownership follows the signed-in contributor's single folder, rather than the upl
 
 ## Limits
 
-The current implementation supports up to 100 collections, 20,000 photos per collection, and 12 directory levels. The default per-file upload limit is 50 MB. Explicit photo selections are limited to 200 photos; contributor-based archives can include the whole collection. Photo editing is not provided.
+The current implementation supports up to 100 collections, 20,000 photos per collection, and 12 directory levels. The default per-file upload limit is 1 GB (1,024 MB). Explicit photo selections are limited to 200 photos; contributor-based archives can include the whole collection. Photo editing is not provided.
 
 ## Photo information
 
 Open a photo and select **Info** (or press **I**) to see its description, capture time, filename, dimensions, size, camera, lens, exposure settings, people, location, and tags when Immich has indexed them. The panel follows the current photo. Back or Escape closes the panel before closing the viewer; on phones it opens as a bottom sheet. Location maps are provided by OpenStreetMap.
 
 Metadata and person portraits come from Immich. Original downloads continue to stream directly from the shared files.
+
+Photos and videos can be selected together from storage, including iPhone MOV/HEVC clips and Android MP4/3GP files. Videos use the same resumable uploads and duplicate checks as photos. Immich supplies posters and browser-compatible video playback; originals remain unchanged and download directly. Video uploads are checked with FFprobe (included in the Docker image). Google Photos link import still imports photos only.

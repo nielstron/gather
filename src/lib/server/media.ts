@@ -6,6 +6,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import sharp from 'sharp';
+import { mediaExtensions, isVideo } from '../media-format';
+import { inspectVideo } from './video';
 import { readSettings, currentCollectionId } from './settings';
 import { config } from './config';
 import { readFileChecksum, writeFileChecksum, listMembers, forgetDeletedPhotos } from './auth';
@@ -14,7 +16,7 @@ import { fileRevision } from './photo-version';
 import { withContributorFiles } from './contributor-lock';
 import type { Member, Photo } from '../types';
 
-const extensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif', '.tif', '.tiff', '.heic', '.heif']);
+const extensions = new Set(mediaExtensions.map(extension => `.${extension}`));
 const formats = new Set(['jpeg', 'png', 'webp', 'avif', 'gif', 'tiff', 'heif']);
 type ScanCache = { root: string; time: number; photos: Photo[]; ids: Set<string> };
 type ScanState = { cache?: ScanCache; scanning?: Promise<Photo[]>; generation: number; removed?: Map<string, string>; uploaded?: Map<string, Photo> };
@@ -96,7 +98,7 @@ async function photoInfo(relative: string, members: Member[], dimensions = { wid
   // Immich supplies actual dimensions when enriching the visible gallery page.
   const revision = photoRevision(relative, stat);
   const folder = relative.includes('/') ? relative.split('/')[0] : '';
-  return { id: encodeId(relative), revision, name: path.basename(relative), folder, owner: members.find((member) => member.folder === folder)?.name || folder || 'Shared folder', width: dimensions.width, height: dimensions.height, bytes: stat.size, modifiedAt: stat.mtime.toISOString(), previewStatus: 'pending' };
+  return { id: encodeId(relative), ...(isVideo(relative) ? { type: 'video' as const } : {}), revision, name: path.basename(relative), folder, owner: members.find((member) => member.folder === folder)?.name || folder || 'Shared folder', width: dimensions.width, height: dimensions.height, bytes: stat.size, modifiedAt: stat.mtime.toISOString(), previewStatus: 'pending' };
 }
 
 export function invalidatePhotos() { const state = scanState(); state.generation++; if (state.cache) state.cache.time = 0; }
@@ -164,7 +166,7 @@ export async function scanPhotos(members: Member[], allowStale = false): Promise
 
 export function validateFilename(name: string) {
   if (!name || name.startsWith('.') || /[\\/\x00-\x1f\x7f]/.test(name) || Buffer.byteLength(name) > 200 || !extensions.has(path.extname(name).toLowerCase())) {
-    throw new MediaError(400, 'Choose a JPEG, PNG, WebP, AVIF, GIF, TIFF, or HEIC photo with a valid filename');
+    throw new MediaError(400, 'Choose a supported photo or video with a valid filename');
   }
   return name;
 }
@@ -228,7 +230,7 @@ async function saveUploadInFolder(member: Member, name: string, body: ReadableSt
     const limiter = new Transform({ transform(chunk, _encoding, callback) {
       size += chunk.length;
       checksum.update(chunk);
-      callback(size > config.maxUploadBytes ? new MediaError(413, `Each photo must be smaller than ${config.maxUploadBytes / 1024 / 1024} MB`) : null, chunk);
+      callback(size > config.maxUploadBytes ? new MediaError(413, `Each file must be smaller than ${config.maxUploadBytes / 1024 / 1024} MB`) : null, chunk);
     } });
     await pipeline(Readable.fromWeb(body as import('node:stream/web').ReadableStream<Uint8Array>), limiter, createWriteStream(temporary, { flags: 'wx', mode: 0o640 }), { signal });
     if (!size) throw new MediaError(400, 'The file is empty');
@@ -242,7 +244,10 @@ async function saveUploadInFolder(member: Member, name: string, body: ReadableSt
       if (existing) return existing;
       nextStage('validation');
       let dimensions = { width: 4, height: 3 };
-      try {
+      if (isVideo(name)) {
+        try { dimensions = await inspectVideo(temporary!, signal); }
+        catch { signal?.throwIfAborted(); throw new MediaError(415, 'This server could not validate the video. Choose a valid MP4, MOV, WebM or other supported video file.'); }
+      } else try {
         const info = await sharp(temporary!, { limitInputPixels: 80_000_000 }).metadata();
         if (!formats.has(info.format || '') || !info.width || !info.height) throw new Error('Unsupported image');
         if (info.width * info.height > 80_000_000) throw new Error('Image too large');

@@ -8,6 +8,7 @@ ENV GATHER_BASE_PATH=$GATHER_BASE_PATH
 RUN npm run build && npm prune --omit=dev
 
 FROM node:22-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 ENV UV_THREADPOOL_SIZE=16 NODE_ENV=production HOST=0.0.0.0 PORT=3000 PHOTO_ROOT=/photos DATA_ROOT=/data
 WORKDIR /app
 COPY --from=build /app/build ./build

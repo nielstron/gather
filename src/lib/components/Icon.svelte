@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { mdiCameraOutline, mdiStarOutline, mdiOpenInNew, mdiFilterVariant, mdiViewGrid, mdiImageOutline, mdiUpload, mdiDownload, mdiFolderOutline, mdiMagnify, mdiChevronRight, mdiClose, mdiCheck, mdiSelectAll, mdiTrashCanOutline, mdiSelectOff, mdiAccountMinusOutline, mdiCheckboxIntermediate, mdiRefresh, mdiSort, mdiSortAscending, mdiSortDescending, mdiLogout, mdiLockOutline, mdiAccountOutline, mdiAccountGroupOutline, mdiClockOutline, mdiInformationOutline, mdiArrowRight, mdiAutoFix } from '@mdi/js';
+  import { mdiPlay, mdiCameraOutline, mdiStarOutline, mdiOpenInNew, mdiFilterVariant, mdiViewGrid, mdiImageOutline, mdiUpload, mdiDownload, mdiFolderOutline, mdiMagnify, mdiChevronRight, mdiClose, mdiCheck, mdiSelectAll, mdiTrashCanOutline, mdiSelectOff, mdiAccountMinusOutline, mdiCheckboxIntermediate, mdiRefresh, mdiSort, mdiSortAscending, mdiSortDescending, mdiLogout, mdiLockOutline, mdiAccountOutline, mdiAccountGroupOutline, mdiClockOutline, mdiInformationOutline, mdiArrowRight, mdiAutoFix } from '@mdi/js';
   export let name = 'grid';
   export let size = 20;
   const paths: Record<string, string> = {
+    'play': mdiPlay,
     'camera': mdiCameraOutline,
     'star': mdiStarOutline,
     'external': mdiOpenInNew,

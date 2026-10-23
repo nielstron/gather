@@ -13,7 +13,7 @@ export const config = {
   get photoRoot() { return readSettings().photoRoot; },
   dataRoot: path.resolve(process.env.DATA_ROOT || './var/data'),
   get collectionName() { return readSettings().collectionName; },
-  maxUploadBytes: positiveInteger(process.env.MAX_UPLOAD_MB, 50) * 1024 * 1024,
+  maxUploadBytes: positiveInteger(process.env.MAX_UPLOAD_MB, 1024) * 1024 * 1024,
   sessionDays: positiveInteger(process.env.SESSION_DAYS, 30),
   secureCookies: process.env.COOKIE_SECURE !== 'false',
   origin: process.env.ORIGIN || 'http://localhost:5173'
